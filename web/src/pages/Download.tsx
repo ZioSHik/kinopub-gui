@@ -16,6 +16,7 @@ import { useI18n, looksLikeTimeout } from "../i18n";
 import { Field, Toggle } from "../components/ui";
 import { SeriesBrowser } from "../components/SeriesBrowser";
 import { DirPicker } from "../components/DirPicker";
+import { InstallFFmpeg } from "../components/InstallFFmpeg";
 
 const QUALITIES = [
   { v: "", label: "Auto (highest)" },
@@ -262,9 +263,6 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
                   <option value="mp4">MP4</option>
                 </select>
               </Field>
-              <Field label={t("Audio tracks")} hint={t('e.g. "anilibria,!jpn" — patterns; "!"=exclude')}>
-                <input className="input" placeholder={t("all")} value={form.audio} onChange={(e) => set("audio", e.target.value)} />
-              </Field>
               <Field label={t("Concurrency")} hint={t("parallel downloads (1–16)")}>
                 <input
                   type="number"
@@ -275,7 +273,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
                   onChange={(e) => set("concurrency", e.target.value === "" ? 1 : Math.max(1, Number(e.target.value)))}
                 />
               </Field>
-              <Field label={t("Retries")}>
+              <Field label={t("Retries")} hint={t("re-attempts per episode after a network error (timeout, reset, 5xx)")}>
                 <input
                   type="number"
                   min={0}
@@ -300,7 +298,6 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
             </div>
 
             <div className="grid gap-2 sm:grid-cols-2">
-              <Toggle label={t("Interactive audio menu")} hint={t("Pick tracks before downloading")} checked={form.audioMenu} onChange={(v) => set("audioMenu", v)} />
               <Toggle label={t("Force re-download")} hint={t("Ignore completed state")} checked={form.force} onChange={(v) => set("force", v)} />
               <Toggle label={t("No chunked download")} hint={t("Stream everything via ffmpeg")} checked={form.noChunked} onChange={(v) => set("noChunked", v)} />
               <Toggle label={t("Verbose logs")} hint={t("Show debug-level log lines")} checked={form.verbosity === "verbose"} onChange={(v) => set("verbosity", v ? "verbose" : "normal")} />
@@ -339,6 +336,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
             <span className="text-xs text-ember-400">{t("ffmpeg not detected — required to download")}</span>
           )}
         </div>
+        {!ffmpeg.ffmpegFound && <InstallFFmpeg className="border-t border-white/[0.05] pt-4" />}
       </div>
 
       {preview && (

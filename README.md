@@ -55,6 +55,8 @@ It is built **on top of** the excellent [`niazlv/kinopub-downloader`](https://gi
   winget install Gyan.FFmpeg   # Windows (or: choco install ffmpeg / scoop install ffmpeg)
   ```
   On Windows, make sure `ffmpeg.exe` and `ffprobe.exe` are on your `PATH` (the package managers above do this) — the Settings page confirms both are found.
+
+  **Or just let the app install it:** if ffmpeg is missing, **Settings → System → Install ffmpeg** (and the button on the Download page) downloads a static ffmpeg/ffprobe build for your platform into the app's config dir and uses it automatically — no system install or admin rights needed.
 - A modern browser (the app opens in your default one).
 
 ## Install & run

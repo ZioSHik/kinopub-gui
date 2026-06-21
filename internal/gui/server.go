@@ -27,6 +27,7 @@ type Server struct {
 	mgr      *JobManager
 	settings *settingsStore
 	updater  *updateChecker
+	tools    *toolInstaller
 	restart  func() // set by main to re-exec the freshly installed binary
 	mux      *http.ServeMux
 }
@@ -34,7 +35,8 @@ type Server struct {
 // NewServer builds the HTTP handler. static is the embedded frontend (rooted at
 // the build output directory).
 func NewServer(version string, static fs.FS) *Server {
-	cleanupOldExecutable() // remove a leftover binary from a previous self-update
+	cleanupOldExecutable()   // remove a leftover binary from a previous self-update
+	ensureManagedBinOnPath() // so a previously installed ffmpeg/ffprobe is found
 	hub := newHub()
 	s := &Server{
 		version:  version,
@@ -43,6 +45,7 @@ func NewServer(version string, static fs.FS) *Server {
 		mgr:      newJobManager(hub),
 		settings: newSettingsStore(),
 		updater:  newUpdateChecker(version),
+		tools:    &toolInstaller{},
 	}
 	s.routes()
 	return s
@@ -113,6 +116,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 
 	mux.HandleFunc("GET /api/ffmpeg", s.handleFFmpeg)
+
+	mux.HandleFunc("GET /api/deps", s.handleDeps)
+	mux.HandleFunc("POST /api/deps/install", s.handleDepsInstall)
 
 	mux.HandleFunc("GET /api/update", s.handleUpdateCheck)
 	mux.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
@@ -268,6 +274,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFFmpeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ffmpegStatus())
+}
+
+func (s *Server) handleDeps(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, depsView())
+}
+
+func (s *Server) handleDepsInstall(w http.ResponseWriter, r *http.Request) {
+	// Downloading a static ffmpeg can take a while; run on a background context
+	// so it isn't aborted if the request context is cancelled.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	err := s.tools.installFFmpeg(ctx)
+	cancel()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// Let every connected client refresh its ffmpeg indicator.
+	s.hub.broadcast(Event{Type: "ffmpeg", Data: ffmpegStatus()})
+	writeJSON(w, http.StatusOK, depsView())
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {

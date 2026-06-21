@@ -208,6 +208,15 @@ const RU: Record<string, string> = {
   "Only this": "Только эту",
   "Start download ({n})": "Скачать ({n})",
   "Toggle season": "Выбрать сезон",
+  "re-attempts per episode after a network error (timeout, reset, 5xx)":
+    "повторные попытки на серию при сетевой ошибке (таймаут, сброс, 5xx)",
+  "Install ffmpeg": "Установить ffmpeg",
+  "Installing ffmpeg…": "Установка ffmpeg…",
+  "ffmpeg installed.": "ffmpeg установлен.",
+  "ffmpeg install failed": "Не удалось установить ffmpeg",
+  "Downloading a static build — this can take a minute.":
+    "Скачивается статичная сборка — это может занять минуту.",
+  "Downloads a static build from {src}.": "Скачивает статичную сборку из {src}.",
   "Software update": "Обновление",
   "Current version": "Текущая версия",
   "A new version is available": "Доступна новая версия",

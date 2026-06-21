@@ -5,6 +5,7 @@ import { useApp } from "../store";
 import { useI18n } from "../i18n";
 import { Field, Spinner, Toggle } from "../components/ui";
 import { DirPicker } from "../components/DirPicker";
+import { InstallFFmpeg } from "../components/InstallFFmpeg";
 
 export function SettingsPage() {
   const { settings, ffmpeg, setSettingsLocal, toast } = useApp();
@@ -235,6 +236,7 @@ function FFmpegInfo({ ffmpeg }: { ffmpeg: FFmpegStatus }) {
         <Row label="ffmpeg" ok={ffmpeg.ffmpegFound} detail={ffmpeg.ffmpegFound ? ffmpeg.ffmpegVersion || ffmpeg.ffmpegPath : t("not found on PATH")} />
         <Row label="ffprobe" ok={ffmpeg.ffprobeFound} detail={ffmpeg.ffprobeFound ? ffmpeg.ffprobePath || "" : t("not found on PATH")} />
       </div>
+      <InstallFFmpeg className="mt-3" />
     </div>
   );
 }

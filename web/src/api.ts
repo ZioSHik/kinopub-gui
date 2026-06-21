@@ -104,6 +104,13 @@ export interface FFmpegStatus {
   ffprobePath?: string;
 }
 
+export interface DepsView {
+  ffmpeg: FFmpegStatus;
+  installSupported: boolean;
+  managed: boolean;
+  source?: string;
+}
+
 export interface UpdateStatus {
   current: string;
   latest?: string;
@@ -309,6 +316,8 @@ export const api = {
     req<AuthStatus>("POST", "/api/auth/login", body),
   logout: () => req<AuthStatus>("POST", "/api/auth/logout"),
   ffmpeg: () => req<FFmpegStatus>("GET", "/api/ffmpeg"),
+  deps: () => req<DepsView>("GET", "/api/deps"),
+  installDeps: () => req<DepsView>("POST", "/api/deps/install"),
   checkUpdate: (force = false) => req<UpdateStatus>("GET", `/api/update${force ? "?force=1" : ""}`),
   applyUpdate: () => req<{ updated: boolean; version: string; restarting: boolean }>("POST", "/api/update/apply"),
   getSettings: () => req<Settings>("GET", "/api/settings"),

@@ -206,7 +206,7 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 		os.Remove(tmpName) // no-op once renamed into place
 	}()
 
-	sum, err := downloadTo(ctx, u.httpClient(), assetURL, tmp)
+	sum, err := downloadTo(ctx, u.httpClient(), assetURL, tmp, 200<<20)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
@@ -243,9 +243,9 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 	return rel.TagName, nil
 }
 
-// downloadTo streams src into w and returns the lowercase hex SHA-256 of the
-// bytes written.
-func downloadTo(ctx context.Context, client *http.Client, url string, w io.Writer) (string, error) {
+// downloadTo streams src into w (capped at maxBytes) and returns the lowercase
+// hex SHA-256 of the bytes written.
+func downloadTo(ctx context.Context, client *http.Client, url string, w io.Writer, maxBytes int64) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -260,7 +260,7 @@ func downloadTo(ctx context.Context, client *http.Client, url string, w io.Write
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, 200<<20)); err != nil {
+	if _, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxBytes)); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -270,7 +270,7 @@ func downloadTo(ctx context.Context, client *http.Client, url string, w io.Write
 // hash recorded for name (empty string if not listed).
 func fetchChecksum(ctx context.Context, client *http.Client, url, name string) (string, error) {
 	var buf strings.Builder
-	if _, err := downloadTo(ctx, client, url, &buf); err != nil {
+	if _, err := downloadTo(ctx, client, url, &buf, 1<<20); err != nil {
 		return "", err
 	}
 	for _, line := range strings.Split(buf.String(), "\n") {

@@ -33,6 +33,7 @@ interface AppContextValue {
   settingsLoaded: boolean;
   update: UpdateStatus | null;
   refreshUpdate: (force?: boolean) => Promise<void>;
+  ffmpegInstall: { supported: boolean; source?: string };
   setSettingsLocal: (s: Settings) => void;
   setAuthLocal: (a: AuthStatus) => void;
   refresh: () => void;
@@ -74,6 +75,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [ffmpegInstall, setFfmpegInstall] = useState<{ supported: boolean; source?: string }>({
+    supported: false,
+  });
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
 
@@ -118,6 +122,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Re-check on every (re)connect. After a self-update restart this runs
         // against the fresh process (empty cache), so the banner clears.
         refreshUpdate();
+        api
+          .deps()
+          .then((d) => setFfmpegInstall({ supported: d.installSupported, source: d.source }))
+          .catch(() => {});
       };
       es.onerror = () => {
         setConnected(false);
@@ -155,6 +163,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           case "auth":
             setAuth(parsed.data as AuthStatus);
             break;
+          case "ffmpeg":
+            setFFmpeg(parsed.data as FFmpegStatus);
+            break;
           case "settings":
             setSettings(parsed.data as Settings);
             break;
@@ -181,6 +192,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       settingsLoaded,
       update,
       refreshUpdate,
+      ffmpegInstall,
       setSettingsLocal: setSettings,
       setAuthLocal: setAuth,
       refresh,
@@ -188,7 +200,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       dismissToast,
     }),
-    [connected, version, jobs, auth, ffmpeg, settings, settingsLoaded, update, toasts],
+    [connected, version, jobs, auth, ffmpeg, settings, settingsLoaded, update, ffmpegInstall, toasts],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
