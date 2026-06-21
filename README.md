@@ -110,6 +110,15 @@ kinopub-gui [flags]
 
 The server binds to `127.0.0.1` only — it is a local control panel, not a public service.
 
+### Updating
+
+Release binaries self-update: **Settings → Software update** shows the current
+version and, when a newer GitHub release exists, a **Update & restart** button.
+It downloads the binary for your platform, verifies its SHA-256 against the
+release `checksums.txt`, replaces the running executable in place, and restarts —
+the open browser tab reconnects automatically. (Builds from source report as
+`dev` and don't self-update; rebuild with `make`.)
+
 ---
 
 ## Using it

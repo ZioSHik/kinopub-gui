@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, FolderPlus, Save, Server, Trash2 } from "lucide-react";
+import { ArrowUpCircle, FolderOpen, FolderPlus, RefreshCw, Save, Server, Trash2 } from "lucide-react";
 import { api, type FFmpegStatus, type Settings } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
@@ -123,6 +123,8 @@ export function SettingsPage() {
 
       <FFmpegInfo ffmpeg={ffmpeg} />
 
+      <UpdateCard />
+
       <div className="flex justify-end">
         <button className="btn-primary" onClick={save} disabled={saving}>
           {saving ? <Spinner className="h-4 w-4" /> : <Save className="h-4 w-4" />}
@@ -137,6 +139,87 @@ export function SettingsPage() {
         onClose={() => setPickLib(false)}
         onSelect={(p) => set("libraryDirs", [...new Set([...libDirs, p])])}
       />
+    </div>
+  );
+}
+
+function UpdateCard() {
+  const { update, refreshUpdate, version, toast } = useApp();
+  const { t } = useI18n();
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const check = async () => {
+    setChecking(true);
+    await refreshUpdate(true);
+    setChecking(false);
+  };
+
+  const apply = async () => {
+    setApplying(true);
+    try {
+      const r = await api.applyUpdate();
+      toast(
+        t("Updating to {v} — the app will restart and this tab will reconnect.", { v: r.version }),
+        "success",
+      );
+      // The server re-execs on the same port; the SSE connection reconnects
+      // automatically, so we keep the spinner until that happens.
+    } catch (e: any) {
+      toast(e.message || t("Update failed"), "error");
+      setApplying(false);
+    }
+  };
+
+  return (
+    <div className="card p-5">
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
+        <ArrowUpCircle className="h-4 w-4 text-gold-400" /> {t("Software update")}
+      </h2>
+      <div className="space-y-3 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-slate-400">{t("Current version")}</span>
+          <span className="font-mono text-xs text-slate-300">{version || "—"}</span>
+        </div>
+
+        {update?.updateAvailable && (
+          <div className="space-y-3 rounded-lg border border-gold-500/25 bg-gold-500/[0.06] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium text-gold-200">
+                {t("New version {v} available", { v: update.latest || "" })}
+              </span>
+              {update.releaseUrl && (
+                <a
+                  href={update.releaseUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-slate-400 underline hover:text-slate-200"
+                >
+                  {t("Release notes")}
+                </a>
+              )}
+            </div>
+            <button className="btn-primary" onClick={apply} disabled={applying}>
+              {applying ? <Spinner className="h-4 w-4" /> : <ArrowUpCircle className="h-4 w-4" />}
+              {applying ? t("Updating…") : t("Update & restart")}
+            </button>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-3">
+          <span className="min-w-0 flex-1 truncate text-xs text-slate-500">
+            {update?.updateAvailable
+              ? ""
+              : update?.note
+                ? update.note
+                : t("You're on the latest version.")}
+          </span>
+          <button className="btn-ghost shrink-0 px-3 py-1.5 text-xs" onClick={check} disabled={checking}>
+            {checking ? <Spinner className="h-3.5 w-3.5" /> : <RefreshCw className="h-3.5 w-3.5" />}{" "}
+            {t("Check for updates")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

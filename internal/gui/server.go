@@ -26,12 +26,15 @@ type Server struct {
 	hub      *Hub
 	mgr      *JobManager
 	settings *settingsStore
+	updater  *updateChecker
+	restart  func() // set by main to re-exec the freshly installed binary
 	mux      *http.ServeMux
 }
 
 // NewServer builds the HTTP handler. static is the embedded frontend (rooted at
 // the build output directory).
 func NewServer(version string, static fs.FS) *Server {
+	cleanupOldExecutable() // remove a leftover binary from a previous self-update
 	hub := newHub()
 	s := &Server{
 		version:  version,
@@ -39,10 +42,15 @@ func NewServer(version string, static fs.FS) *Server {
 		hub:      hub,
 		mgr:      newJobManager(hub),
 		settings: newSettingsStore(),
+		updater:  newUpdateChecker(version),
 	}
 	s.routes()
 	return s
 }
+
+// SetRestart registers a function the server calls to re-exec the process after
+// an in-place update has been installed.
+func (s *Server) SetRestart(fn func()) { s.restart = fn }
 
 // Handler returns the root http.Handler. There is no auth gate: local features
 // (Library, Doctor, Settings, the folder picker) work without signing in;
@@ -105,6 +113,9 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 
 	mux.HandleFunc("GET /api/ffmpeg", s.handleFFmpeg)
+
+	mux.HandleFunc("GET /api/update", s.handleUpdateCheck)
+	mux.HandleFunc("POST /api/update/apply", s.handleUpdateApply)
 
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
@@ -257,6 +268,33 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFFmpeg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ffmpegStatus())
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("force") == "1"
+	writeJSON(w, http.StatusOK, s.updater.status(r.Context(), force))
+}
+
+func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	// Run on a background context with a generous timeout so a slow download
+	// isn't aborted if the request context is cancelled mid-way.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	version, err := s.updater.apply(ctx)
+	cancel()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	canRestart := s.restart != nil
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true, "version": version, "restarting": canRestart})
+	if canRestart {
+		// Restart shortly after the response is flushed so the browser tab can
+		// reconnect to the new process on the same port.
+		go func() {
+			time.Sleep(800 * time.Millisecond)
+			s.restart()
+		}()
+	}
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {

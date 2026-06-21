@@ -72,6 +72,17 @@ func run() int {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Let the update endpoint restart us: it signals here, and we re-exec the
+	// freshly installed binary on the same address (with -no-open) so the open
+	// browser tab simply reconnects over SSE.
+	restartCh := make(chan struct{}, 1)
+	srv.SetRestart(func() {
+		select {
+		case restartCh <- struct{}{}:
+		default:
+		}
+	})
+
 	banner(url)
 
 	errCh := make(chan error, 1)
@@ -94,6 +105,20 @@ func run() int {
 			fmt.Fprintf(os.Stderr, "kinopub-gui: server error: %v\n", err)
 			return 1
 		}
+	case <-restartCh:
+		fmt.Fprintln(os.Stderr, "\nkinopub-gui: update installed — restarting…")
+		boundAddr := ln.Addr().String()
+		_ = ln.Close() // release the port for the new process
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kinopub-gui: cannot locate executable: %v\n", err)
+			return 1
+		}
+		if err := reexec(exe, []string{"-addr", boundAddr, "-no-open"}); err != nil {
+			fmt.Fprintf(os.Stderr, "kinopub-gui: restart failed (please relaunch manually): %v\n", err)
+			return 1
+		}
+		return 0
 	case <-sigCh:
 		fmt.Fprintln(os.Stderr, "\nkinopub-gui: shutting down…")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

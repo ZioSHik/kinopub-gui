@@ -104,6 +104,17 @@ export interface FFmpegStatus {
   ffprobePath?: string;
 }
 
+export interface UpdateStatus {
+  current: string;
+  latest?: string;
+  updateAvailable: boolean;
+  releaseUrl?: string;
+  notes?: string;
+  assetName?: string;
+  supported: boolean;
+  note?: string;
+}
+
 export interface Settings {
   outputPath: string;
   quality: string;
@@ -298,6 +309,8 @@ export const api = {
     req<AuthStatus>("POST", "/api/auth/login", body),
   logout: () => req<AuthStatus>("POST", "/api/auth/logout"),
   ffmpeg: () => req<FFmpegStatus>("GET", "/api/ffmpeg"),
+  checkUpdate: (force = false) => req<UpdateStatus>("GET", `/api/update${force ? "?force=1" : ""}`),
+  applyUpdate: () => req<{ updated: boolean; version: string; restarting: boolean }>("POST", "/api/update/apply"),
   getSettings: () => req<Settings>("GET", "/api/settings"),
   saveSettings: (s: Settings) => req<Settings>("PUT", "/api/settings", s),
   preview: (r: Partial<RunRequest>) => req<PreviewResponse>("POST", "/api/preview", r),

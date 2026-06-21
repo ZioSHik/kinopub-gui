@@ -68,6 +68,10 @@ jobs:
           zip kinopub-windows-amd64.zip kinopub-windows-amd64.exe
           zip kinopub-gui-windows-amd64.zip kinopub-gui-windows-amd64.exe
 
+          # checksums.txt — the in-app updater verifies the downloaded binary
+          # against this before installing it.
+          sha256sum kinopub-* > checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -94,3 +98,4 @@ jobs:
             kinopub-gui-linux-arm64.tar.gz
             kinopub-gui-windows-amd64.exe
             kinopub-gui-windows-amd64.zip
+            checksums.txt

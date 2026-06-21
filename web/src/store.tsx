@@ -14,6 +14,7 @@ import {
   type JobView,
   type Settings,
   type Snapshot,
+  type UpdateStatus,
 } from "./api";
 
 export interface Toast {
@@ -30,6 +31,8 @@ interface AppContextValue {
   ffmpeg: FFmpegStatus;
   settings: Settings;
   settingsLoaded: boolean;
+  update: UpdateStatus | null;
+  refreshUpdate: (force?: boolean) => Promise<void>;
   setSettingsLocal: (s: Settings) => void;
   setAuthLocal: (a: AuthStatus) => void;
   refresh: () => void;
@@ -70,8 +73,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [ffmpeg, setFFmpeg] = useState<FFmpegStatus>(emptyFFmpeg);
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
+
+  const refreshUpdate = (force = false): Promise<void> =>
+    api
+      .checkUpdate(force)
+      .then((u) => setUpdate(u))
+      .catch(() => {});
 
   const toast = (message: string, kind: Toast["kind"] = "info") => {
     const id = ++toastSeq.current;
@@ -103,7 +113,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (stopped) return;
       es = new EventSource("/api/events");
-      es.onopen = () => setConnected(true);
+      es.onopen = () => {
+        setConnected(true);
+        // Re-check on every (re)connect. After a self-update restart this runs
+        // against the fresh process (empty cache), so the banner clears.
+        refreshUpdate();
+      };
       es.onerror = () => {
         setConnected(false);
         es?.close();
@@ -164,6 +179,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ffmpeg,
       settings,
       settingsLoaded,
+      update,
+      refreshUpdate,
       setSettingsLocal: setSettings,
       setAuthLocal: setAuth,
       refresh,
@@ -171,7 +188,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       dismissToast,
     }),
-    [connected, version, jobs, auth, ffmpeg, settings, settingsLoaded, toasts],
+    [connected, version, jobs, auth, ffmpeg, settings, settingsLoaded, update, toasts],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import {
   Activity,
+  ArrowUpCircle,
   Download,
   Library as LibraryIcon,
   ListVideo,
@@ -35,7 +36,7 @@ const NAV: { id: Page; label: string; icon: any }[] = [
 ];
 
 export default function App() {
-  const { connected, version, jobs, auth, ffmpeg } = useApp();
+  const { connected, version, jobs, auth, ffmpeg, update } = useApp();
   const { t } = useI18n();
   const [page, setPage] = useState<Page>("download");
   const [authOpen, setAuthOpen] = useState(false);
@@ -76,6 +77,17 @@ export default function App() {
             <Brand compact />
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {update?.updateAvailable && (
+              <button
+                onClick={() => setPage("settings")}
+                className="chip border-gold-500/30 bg-gold-500/[0.12] text-gold-300 hover:bg-gold-500/[0.2]"
+                title={t("A new version is available")}
+              >
+                <ArrowUpCircle className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">{t("Update {v}", { v: update.latest || "" })}</span>
+                <span className="sm:hidden">{t("Update")}</span>
+              </button>
+            )}
             <LangSwitcher />
             <span
               className={clsx(
@@ -173,7 +185,7 @@ function SystemFooter({
         <span className={clsx("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse-soft")} />
         {connected ? t("connected") : t("reconnecting")}
       </div>
-      <div className="pt-1 text-slate-600">{version ? `v${version}` : ""}</div>
+      <div className="pt-1 text-slate-600">{version}</div>
     </div>
   );
 }
