@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/niazlv/kinopub-downloader/internal/domain"
@@ -177,6 +178,11 @@ func TestEnsureDirs_Idempotent(t *testing.T) {
 }
 
 func TestEnsureDirs_UnwritableError(t *testing.T) {
+	// Relies on /dev/null being a file so a directory cannot be created beneath
+	// it. Windows has no equivalent always-unwritable path, so skip there.
+	if runtime.GOOS == "windows" {
+		t.Skip("no /dev/null-style unwritable path on Windows")
+	}
 	// Use a path that cannot be created (e.g., under /dev/null on Unix).
 	l := New(domain.ContainerMKV)
 

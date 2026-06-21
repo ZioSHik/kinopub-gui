@@ -3,6 +3,7 @@ package fsutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -27,7 +28,9 @@ func TestAtomicWrite_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if info.Mode().Perm() != 0644 {
+	// Windows does not implement Unix permission bits (Go's os.Chmod only
+	// toggles the read-only bit), so the exact mode is meaningless there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0644 {
 		t.Errorf("perm = %o, want 0644", info.Mode().Perm())
 	}
 }

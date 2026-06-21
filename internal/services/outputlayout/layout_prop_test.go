@@ -24,7 +24,9 @@ import (
 
 func TestProperty28_EpisodeOutputPathNesting(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		root := rapid.StringMatching(`^/[a-z]{1,10}(/[a-z]{1,10}){0,3}$`).Draw(t, "root")
+		// Normalize to the OS path convention so the prefix/Rel checks below hold
+		// on Windows too, where EpisodePath returns backslash-separated paths.
+		root := filepath.Clean(rapid.StringMatching(`^/[a-z]{1,10}(/[a-z]{1,10}){0,3}$`).Draw(t, "root"))
 		title := rapid.StringMatching(`^[A-Za-zА-Яа-я0-9 ]{1,30}$`).Draw(t, "title")
 		seriesID := rapid.StringMatching(`^[0-9]{1,6}$`).Draw(t, "seriesID")
 		season := rapid.IntRange(1, 99).Draw(t, "season")
