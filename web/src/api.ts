@@ -137,6 +137,7 @@ export interface RunRequest {
   proxy: string;
   seasons: string;
   episodes: string;
+  episodeKeys?: string[];
   audio: string;
   audioMenu: boolean;
   force: boolean;
@@ -309,6 +310,7 @@ export const api = {
     req<{ ok: boolean }>("POST", `/api/jobs/${id}/audio`, { indices }),
   doctor: (r: DoctorRequest) => req<DoctorReport>("POST", "/api/doctor", r),
   library: () => req<LibraryResponse>("GET", "/api/library"),
+  deleteLibrary: (dir: string) => req<{ deleted: boolean }>("POST", "/api/library/delete", { dir }),
   openPath: (path: string, reveal = false) => req<{ ok: boolean }>("POST", "/api/open", { path, reveal }),
   fs: (path: string) => req<FSListing>("GET", `/api/fs?path=${encodeURIComponent(path)}`),
 };

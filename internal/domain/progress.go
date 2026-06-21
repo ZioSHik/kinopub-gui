@@ -2,17 +2,18 @@ package domain
 
 // SeriesPlan describes the scope of a download run for progress tracking.
 type SeriesPlan struct {
-	Title            string      // series title for display
-	Total            int         // total episodes in the series (including already completed)
-	Seasons          map[int]int // season number → total episode count in that season
-	AlreadyCompleted int         // episodes already completed from previous sessions
+	Title              string      // series title for display
+	PosterURL          string      // series poster, when known (used by the GUI)
+	Total              int         // total episodes in the series (including already completed)
+	Seasons            map[int]int // season number → total episode count in that season
+	AlreadyCompleted   int         // episodes already completed from previous sessions
 	CompletedPerSeason map[int]int // season → already completed count from previous sessions
 }
 
 // ProgressSnapshot captures the current progress state at a point in time.
 type ProgressSnapshot struct {
-	SeriesPercent int              // [0,100] floor
-	SeasonPercent map[int]int      // season → [0,100] floor
+	SeriesPercent int         // [0,100] floor
+	SeasonPercent map[int]int // season → [0,100] floor
 	Episode       *EpisodeProgress
 }
 
@@ -28,7 +29,7 @@ type EpisodeProgress struct {
 type EpisodeState int
 
 const (
-	EpisodePending   EpisodeState = iota
+	EpisodePending EpisodeState = iota
 	EpisodeRunning
 	EpisodeCompleted
 	EpisodeFailed

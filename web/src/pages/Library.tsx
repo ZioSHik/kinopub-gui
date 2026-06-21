@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, Trash2, XCircle } from "lucide-react";
 import { api, type LibraryResponse, type LibrarySeries } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
 import { bytes, relTime } from "../lib/format";
 import { EmptyState, PosterImage, Spinner } from "../components/ui";
 
-function SeriesCard({ s }: { s: LibrarySeries }) {
+function SeriesCard({ s, onDeleted }: { s: LibrarySeries; onDeleted: () => void }) {
   const { t } = useI18n();
   const { toast } = useApp();
   const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const episodes = s.episodes ?? [];
   const missing = episodes.filter((e) => !e.exists).length;
 
@@ -18,6 +19,22 @@ function SeriesCard({ s }: { s: LibrarySeries }) {
       await api.openPath(path, reveal);
     } catch (e: any) {
       toast(e.message || t("Could not open"), "error");
+    }
+  };
+
+  const remove = async () => {
+    if (!window.confirm(t("Delete “{title}” and all its files from disk? This cannot be undone.", { title: s.title }))) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.deleteLibrary(s.dir);
+      toast(t("Deleted “{title}”", { title: s.title }), "success");
+      onDeleted();
+    } catch (e: any) {
+      toast(e.message || t("Delete failed"), "error");
+    } finally {
+      setDeleting(false);
     }
   };
   return (
@@ -50,9 +67,16 @@ function SeriesCard({ s }: { s: LibrarySeries }) {
       </button>
       {open && (
         <div className="border-t border-white/[0.05] bg-black/20 p-3">
-          <div className="mb-2 flex justify-end">
+          <div className="mb-2 flex justify-end gap-2">
             <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => openPath(s.dir)}>
               <FolderOpen className="h-3.5 w-3.5" /> {t("Open folder")}
+            </button>
+            <button
+              className="btn-ghost px-3 py-1.5 text-xs text-ember-300 hover:bg-ember-500/10 hover:text-ember-200"
+              onClick={remove}
+              disabled={deleting}
+            >
+              {deleting ? <Spinner className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />} {t("Delete")}
             </button>
           </div>
           <div className="grid gap-1 sm:grid-cols-2">
@@ -129,7 +153,7 @@ export function LibraryPage() {
       ) : (
         <div className="space-y-4">
           {series.map((s) => (
-            <SeriesCard key={s.stateFile} s={s} />
+            <SeriesCard key={s.stateFile} s={s} onDeleted={load} />
           ))}
         </div>
       )}

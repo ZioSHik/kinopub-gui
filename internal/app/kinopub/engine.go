@@ -163,6 +163,7 @@ func (e *engine) runRSS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// 7. Start progress reporting.
 	plan := domain.SeriesPlan{
 		Title:              series.Title,
+		PosterURL:          series.PosterURL,
 		Total:              len(allMatching),
 		Seasons:            countSeasons(allMatching),
 		AlreadyCompleted:   alreadyCompleted,
@@ -441,9 +442,39 @@ func (e *engine) runRSS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunResult, error) {
 	log := e.deps.Logger.Component("engine-hls")
 
-	// 1. Extract playlist from page.
+	// 1. Extract playlist from page, retrying a few times: kino.pub sits behind
+	// Cloudflare and the first request after an idle period often fails
+	// transiently (timeout / 5xx / reset). Without this a flaky first hit fails
+	// the whole download before it starts.
 	log.Info("extracting HLS playlist from page", domain.F("url", cfg.InputURL))
-	playlist, err := e.deps.PageScraper.ExtractAllSeasons(ctx, cfg.InputURL)
+	const scrapeAttempts = 4
+	var (
+		playlist *domain.PagePlaylist
+		err      error
+	)
+	for attempt := 1; attempt <= scrapeAttempts; attempt++ {
+		playlist, err = e.deps.PageScraper.ExtractAllSeasons(ctx, cfg.InputURL)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return domain.RunResult{}, fmt.Errorf("page scrape: %w", ctx.Err())
+		}
+		if attempt < scrapeAttempts {
+			delay := time.Duration(attempt) * 2 * time.Second
+			log.Warn("page scrape failed, retrying",
+				domain.F("attempt", attempt),
+				domain.F("max_attempts", scrapeAttempts),
+				domain.F("retry_in", delay.String()),
+				domain.F("error", err.Error()),
+			)
+			select {
+			case <-ctx.Done():
+				return domain.RunResult{}, fmt.Errorf("page scrape: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+	}
 	if err != nil {
 		return domain.RunResult{}, fmt.Errorf("page scrape: %w", err)
 	}
@@ -539,6 +570,7 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// 8. Start progress reporting.
 	plan := domain.SeriesPlan{
 		Title:              series.Title,
+		PosterURL:          series.PosterURL,
 		Total:              len(allMatching),
 		Seasons:            countSeasons(allMatching),
 		AlreadyCompleted:   alreadyCompleted,
@@ -1023,6 +1055,24 @@ func (e *engine) buildSeriesFromPlaylist(playlist *domain.PagePlaylist, cfg doma
 
 // matchingEpisodes returns all episodes matching season/episode selection (ignoring completion state).
 func (e *engine) matchingEpisodes(series domain.Series, cfg domain.RunConfig) []domain.Episode {
+	// An explicit per-episode allow-list (from the GUI picker) wins over the
+	// season/episode cross-product so an exact selection is honored.
+	if len(cfg.SelectedEpisodes) > 0 {
+		want := make(map[[2]int]bool, len(cfg.SelectedEpisodes))
+		for _, k := range cfg.SelectedEpisodes {
+			want[[2]int{k.Season, k.Episode}] = true
+		}
+		var matched []domain.Episode
+		for _, season := range series.Seasons {
+			for _, ep := range season.Episodes {
+				if want[[2]int{ep.Key.Season, ep.Key.Episode}] {
+					matched = append(matched, ep)
+				}
+			}
+		}
+		return matched
+	}
+
 	var matched []domain.Episode
 	for _, season := range series.Seasons {
 		if !cfg.SeasonSel.Matches(season.Number) {

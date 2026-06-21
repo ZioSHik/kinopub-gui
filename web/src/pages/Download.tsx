@@ -13,7 +13,6 @@ import {
 import { api, type PreviewResponse, type RunRequest } from "../api";
 import { useApp } from "../store";
 import { useI18n, looksLikeTimeout } from "../i18n";
-import { parseSeasons } from "../lib/format";
 import { Field, Toggle } from "../components/ui";
 import { SeriesBrowser } from "../components/SeriesBrowser";
 import { DirPicker } from "../components/DirPicker";
@@ -59,7 +58,12 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
 
   const [advanced, setAdvanced] = useState(false);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
-  const [selectedSeasons, setSelectedSeasons] = useState<Set<number> | null>(null);
+  // Per-episode selection (episode keys "S{n}E{n}"). null until a preview loads;
+  // a preview seeds it with all not-yet-downloaded episodes.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string> | null>(null);
+
+  const selectableKeysOf = (p: PreviewResponse): string[] =>
+    p.seasons.flatMap((s) => s.episodes.filter((e) => !e.completed).map((e) => e.key));
   const [previewing, setPreviewing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [pickDir, setPickDir] = useState(false);
@@ -87,19 +91,24 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
   const set = <K extends keyof RunRequest>(k: K, v: RunRequest[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
-  const seasonsString = (): string => {
-    if (!preview || selectedSeasons === null) return "";
-    return parseSeasons([...selectedSeasons]);
-  };
-
-  const toggleSeason = (n: number) => {
-    setSelectedSeasons((cur) => {
-      const all = preview ? preview.seasons.map((s) => s.number) : [];
-      const base = cur === null ? new Set(all) : new Set(cur);
-      base.has(n) ? base.delete(n) : base.add(n);
+  const toggleEpisode = (key: string) =>
+    setSelectedKeys((cur) => {
+      const base = new Set(cur ?? []);
+      base.has(key) ? base.delete(key) : base.add(key);
       return base;
     });
-  };
+
+  const toggleSeason = (season: number) =>
+    setSelectedKeys((cur) => {
+      const base = new Set(cur ?? []);
+      const eps = preview?.seasons.find((s) => s.number === season)?.episodes.filter((e) => !e.completed) ?? [];
+      const allOn = eps.length > 0 && eps.every((e) => base.has(e.key));
+      eps.forEach((e) => (allOn ? base.delete(e.key) : base.add(e.key)));
+      return base;
+    });
+
+  const selectAllEpisodes = () => setSelectedKeys(new Set(preview ? selectableKeysOf(preview) : []));
+  const deselectAllEpisodes = () => setSelectedKeys(new Set());
 
   const errorToast = (msg: string, fallback: string) => {
     if (looksLikeTimeout(msg)) {
@@ -118,7 +127,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
     try {
       const r = await api.preview({ ...form, dryRun: true });
       setPreview(r);
-      setSelectedSeasons(null);
+      setSelectedKeys(new Set(selectableKeysOf(r)));
       toast(t('Resolved “{title}” · {n} episodes', { title: r.title, n: r.total }), "success");
     } catch (e: any) {
       errorToast(e.message, t("Preview failed"));
@@ -147,7 +156,9 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
       await api.startJob({
         ...form,
         dryRun: false,
-        seasons: seasonsString(),
+        // Explicit per-episode selection from the browser. Omitted (→ all) when
+        // the user downloads without previewing.
+        episodeKeys: preview && selectedKeys ? [...selectedKeys] : undefined,
         seedTitle: preview?.title || "",
         seedPoster: preview?.posterUrl || "",
         seedTitles,
@@ -254,20 +265,6 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
               <Field label={t("Audio tracks")} hint={t('e.g. "anilibria,!jpn" — patterns; "!"=exclude')}>
                 <input className="input" placeholder={t("all")} value={form.audio} onChange={(e) => set("audio", e.target.value)} />
               </Field>
-              <Field label={t("Seasons")} hint={t("e.g. 1,3-5 — or use the browser below")}>
-                <input
-                  className="input"
-                  placeholder={t("all")}
-                  value={preview && selectedSeasons !== null ? seasonsString() : form.seasons}
-                  onChange={(e) => {
-                    set("seasons", e.target.value);
-                    setSelectedSeasons(null);
-                  }}
-                />
-              </Field>
-              <Field label={t("Episodes")} hint={t("e.g. 1,3-5")}>
-                <input className="input" placeholder={t("all")} value={form.episodes} onChange={(e) => set("episodes", e.target.value)} />
-              </Field>
               <Field label={t("Concurrency")} hint={t("parallel downloads (1–16)")}>
                 <input
                   type="number"
@@ -330,9 +327,13 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
         )}
 
         <div className="flex flex-wrap items-center gap-3 border-t border-white/[0.05] pt-4">
-          <button className="btn-primary" onClick={start} disabled={starting}>
+          <button
+            className="btn-primary"
+            onClick={start}
+            disabled={starting || (!!preview && !!selectedKeys && selectedKeys.size === 0)}
+          >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {t("Start download")}
+            {preview && selectedKeys ? t("Start download ({n})", { n: selectedKeys.size }) : t("Start download")}
           </button>
           {!ffmpeg.ffmpegFound && (
             <span className="text-xs text-ember-400">{t("ffmpeg not detected — required to download")}</span>
@@ -342,7 +343,14 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
 
       {preview && (
         <div className="card p-5">
-          <SeriesBrowser preview={preview} selectedSeasons={selectedSeasons} onToggleSeason={toggleSeason} />
+          <SeriesBrowser
+            preview={preview}
+            selectedKeys={selectedKeys ?? new Set()}
+            onToggleEpisode={toggleEpisode}
+            onToggleSeason={toggleSeason}
+            onSelectAll={selectAllEpisodes}
+            onDeselectAll={deselectAllEpisodes}
+          />
         </div>
       )}
 

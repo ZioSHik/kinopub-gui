@@ -121,6 +121,7 @@ func (s *Server) routes() {
 
 	mux.HandleFunc("POST /api/doctor", s.handleDoctor)
 	mux.HandleFunc("GET /api/library", s.handleLibrary)
+	mux.HandleFunc("POST /api/library/delete", s.handleDeleteLibrary)
 	mux.HandleFunc("POST /api/open", s.handleOpenPath)
 	mux.HandleFunc("GET /api/fs", s.handleFS)
 	mux.HandleFunc("GET /api/img", s.handleImage)
@@ -428,6 +429,25 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	dirs := s.libraryDirs()
 	writeJSON(w, http.StatusOK, scanLibrary(dirs))
+}
+
+func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Dir string `json:"dir"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Dir == "" {
+		writeErr(w, http.StatusBadRequest, "dir is required")
+		return
+	}
+	if err := deleteLibrarySeries(body.Dir, s.libraryDirs()); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 }
 
 func (s *Server) handleOpenPath(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -92,6 +93,43 @@ func scanLibrary(dirs []string) LibraryResponse {
 		return resp.Series[a].UpdatedAt.After(resp.Series[b].UpdatedAt)
 	})
 	return resp
+}
+
+// deleteLibrarySeries removes a downloaded series directory (its files and state
+// file) from disk. For safety it only deletes a directory that (a) actually
+// contains a kinopub state file and (b) lives strictly inside one of the
+// configured library/output roots — never a root itself or an arbitrary path.
+func deleteLibrarySeries(dir string, roots []string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+
+	if _, err := os.Stat(filepath.Join(abs, stateFileName)); err != nil {
+		return fmt.Errorf("not a kinopub download folder (no %s)", stateFileName)
+	}
+
+	inside := false
+	for _, root := range roots {
+		rabs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Clean(rabs), abs)
+		if err != nil {
+			continue
+		}
+		// Strictly inside: not "." (the root itself) and not escaping with "..".
+		if rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			inside = true
+			break
+		}
+	}
+	if !inside {
+		return fmt.Errorf("folder is outside the configured library folders")
+	}
+	return os.RemoveAll(abs)
 }
 
 func readLibraryState(stateFile string) (LibrarySeries, bool) {

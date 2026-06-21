@@ -21,16 +21,21 @@ func newEventReporter(mgr *JobManager, job *Job) *eventReporter {
 
 // Compile-time checks that we satisfy every interface the engine may assert.
 var (
-	_ domain.ProgressReporter   = (*eventReporter)(nil)
-	_ domain.ByteProgressSink   = (*eventReporter)(nil)
+	_ domain.ProgressReporter    = (*eventReporter)(nil)
+	_ domain.ByteProgressSink    = (*eventReporter)(nil)
 	_ domain.SegmentProgressSink = (*eventReporter)(nil)
-	_ domain.HLSProgressSink    = (*eventReporter)(nil)
+	_ domain.HLSProgressSink     = (*eventReporter)(nil)
 )
 
 func (r *eventReporter) Start(plan domain.SeriesPlan) {
 	r.job.mu.Lock()
 	if plan.Title != "" && r.job.title == "" {
 		r.job.title = plan.Title
+	}
+	// Surface the poster the engine scraped, so jobs started without a Preview
+	// (which would otherwise seed it) still show cover art.
+	if plan.PosterURL != "" && r.job.posterURL == "" {
+		r.job.posterURL = plan.PosterURL
 	}
 	seasons := make(map[int]int, len(plan.Seasons))
 	for k, v := range plan.Seasons {

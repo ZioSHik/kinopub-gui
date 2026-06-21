@@ -35,21 +35,26 @@ const (
 // RunConfig holds all configuration for a single download run.
 type RunConfig struct {
 	InputURL        string
-	OutputPath      string        // "" → cwd (Req 11.1)
-	MaxConcurrency  int           // [1,16], default 2 (Req 4.1, 4.2)
-	MaxRetries      int           // default 5 (Req 5.6)
-	MinIntervalMS   int           // [0,60000] (Req 4.5)
-	ProxyURL        string        // explicit proxy; "" → system/direct
+	OutputPath      string // "" → cwd (Req 11.1)
+	MaxConcurrency  int    // [1,16], default 2 (Req 4.1, 4.2)
+	MaxRetries      int    // default 5 (Req 5.6)
+	MinIntervalMS   int    // [0,60000] (Req 4.5)
+	ProxyURL        string // explicit proxy; "" → system/direct
 	Quality         Quality
-	Verbosity       Verbosity     // default Normal (Req 14.1)
-	FFmpegPath      string        // default "ffmpeg" on PATH (Req 7.3)
-	LogFilePath     string        // "" → no file sink (Req 13.7)
+	Verbosity       Verbosity // default Normal (Req 14.1)
+	FFmpegPath      string    // default "ffmpeg" on PATH (Req 7.3)
+	LogFilePath     string    // "" → no file sink (Req 13.7)
 	Container       Container
-	ForceRedownload bool          // (Req 12.4)
-	SeasonSel       Selection     // (Req 15.5)
-	EpisodeSel      Selection     // (Req 15.5)
-	DryRun          bool          // (Req 15.6)
-	GracePeriod     time.Duration // default 30s (Req 4.7)
+	ForceRedownload bool      // (Req 12.4)
+	SeasonSel       Selection // (Req 15.5)
+	EpisodeSel      Selection // (Req 15.5)
+	// SelectedEpisodes, when non-empty, is an explicit allow-list of episodes to
+	// download (matched by Season+Episode). It takes precedence over SeasonSel /
+	// EpisodeSel and lets the GUI send an exact, per-episode selection that the
+	// season/episode cross-product cannot express.
+	SelectedEpisodes []EpisodeKey
+	DryRun           bool          // (Req 15.6)
+	GracePeriod      time.Duration // default 30s (Req 4.7)
 
 	// Authentication / request shaping. kino.pub sits behind Cloudflare and may
 	// return HTTP 403 for unauthenticated requests. These fields let the user

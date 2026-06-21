@@ -206,6 +206,13 @@ const RU: Record<string, string> = {
   "Select all": "Выбрать все",
   "Deselect all": "Снять все",
   "Only this": "Только эту",
+  "Start download ({n})": "Скачать ({n})",
+  "Toggle season": "Выбрать сезон",
+  "Delete": "Удалить",
+  "Delete failed": "Не удалось удалить",
+  "Deleted “{title}”": "Удалено «{title}»",
+  "Delete “{title}” and all its files from disk? This cannot be undone.":
+    "Удалить «{title}» и все его файлы с диска? Это нельзя отменить.",
 
   // Dir picker
   "Choose a folder": "Выбор папки",

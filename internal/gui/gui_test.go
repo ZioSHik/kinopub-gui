@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -114,8 +115,43 @@ func TestResolveAuth(t *testing.T) {
 	})
 }
 
+func TestParseEpisodeKeys(t *testing.T) {
+	got, err := parseEpisodeKeys([]string{"S1E1", "S0E12", " S2E3 "})
+	if err != nil {
+		t.Fatalf("parseEpisodeKeys: %v", err)
+	}
+	want := []domain.EpisodeKey{{Season: 1, Episode: 1}, {Season: 0, Episode: 12}, {Season: 2, Episode: 3}}
+	if len(got) != len(want) {
+		t.Fatalf("got %d keys, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Season != want[i].Season || got[i].Episode != want[i].Episode {
+			t.Errorf("key %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if _, err := parseEpisodeKeys([]string{"nonsense"}); err == nil {
+		t.Error("expected error for unparseable key")
+	}
+	if got, err := parseEpisodeKeys(nil); err != nil || got != nil {
+		t.Errorf("nil keys: got %v, %v", got, err)
+	}
+}
+
 func TestBuildRunConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	t.Run("explicit episode keys become SelectedEpisodes", func(t *testing.T) {
+		cfg, err := buildRunConfig(RunRequest{
+			URL:         "https://kino.pub/item/view/1",
+			EpisodeKeys: []string{"S1E1", "S1E2"},
+		})
+		if err != nil {
+			t.Fatalf("buildRunConfig: %v", err)
+		}
+		if len(cfg.SelectedEpisodes) != 2 {
+			t.Fatalf("SelectedEpisodes = %v, want 2 entries", cfg.SelectedEpisodes)
+		}
+	})
 
 	t.Run("maps container and verbosity", func(t *testing.T) {
 		cfg, err := buildRunConfig(RunRequest{
@@ -197,6 +233,65 @@ func TestGuardLocalOnly(t *testing.T) {
 			t.Errorf("status = %d, want 403 for forged host", resp.StatusCode)
 		}
 	})
+}
+
+func TestDeleteLibrarySeries(t *testing.T) {
+	root := t.TempDir()
+	roots := []string{root}
+
+	// A valid kinopub series dir inside the library root.
+	seriesDir := filepath.Join(root, "Some Show")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, stateFileName), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "S1E1.mkv"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reject: directory without a state file.
+	noState := filepath.Join(root, "Random")
+	_ = os.MkdirAll(noState, 0o755)
+	if err := deleteLibrarySeries(noState, roots); err == nil {
+		t.Error("expected rejection of a dir without a state file")
+	}
+
+	// Reject: the library root itself.
+	if err := deleteLibrarySeries(root, roots); err == nil {
+		t.Error("expected rejection of the library root itself")
+	}
+
+	// Reject: a path outside the configured roots.
+	outside := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outside, stateFileName), []byte("{}"), 0o644)
+	if err := deleteLibrarySeries(outside, roots); err == nil {
+		t.Error("expected rejection of a path outside the library roots")
+	}
+
+	// Accept: the valid series dir, and it's actually removed.
+	if err := deleteLibrarySeries(seriesDir, roots); err != nil {
+		t.Fatalf("deleteLibrarySeries(valid): %v", err)
+	}
+	if _, err := os.Stat(seriesDir); !os.IsNotExist(err) {
+		t.Error("series dir should have been removed")
+	}
+}
+
+func TestFindStateDirs(t *testing.T) {
+	root := t.TempDir()
+	a := filepath.Join(root, "ShowA")
+	b := filepath.Join(root, "nested", "ShowB")
+	_ = os.MkdirAll(a, 0o755)
+	_ = os.MkdirAll(b, 0o755)
+	_ = os.WriteFile(filepath.Join(a, stateFileName), []byte("{}"), 0o644)
+	_ = os.WriteFile(filepath.Join(b, stateFileName), []byte("{}"), 0o644)
+
+	dirs := findStateDirs(root)
+	if len(dirs) != 2 {
+		t.Fatalf("findStateDirs = %v, want 2 dirs (one nested)", dirs)
+	}
 }
 
 func TestOpenPathAllowed(t *testing.T) {

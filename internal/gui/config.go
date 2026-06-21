@@ -2,8 +2,10 @@ package gui
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,29 +159,33 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 
 // RunRequest is the JSON body the UI sends to start a download or run a preview.
 type RunRequest struct {
-	URL           string            `json:"url"`
-	OutputPath    string            `json:"outputPath"`
-	Quality       string            `json:"quality"`
-	Container     string            `json:"container"`
-	Concurrency   int               `json:"concurrency"`
-	Retries       int               `json:"retries"`
-	MinIntervalMS int               `json:"minIntervalMs"`
-	Proxy         string            `json:"proxy"`
-	Seasons       string            `json:"seasons"`
-	Episodes      string            `json:"episodes"`
-	Audio         string            `json:"audio"`
-	AudioMenu     bool              `json:"audioMenu"`
-	Force         bool              `json:"force"`
-	NoChunked     bool              `json:"noChunked"`
-	DryRun        bool              `json:"dryRun"`
-	FFmpegArgs    string            `json:"ffmpegArgs"`
-	FFmpegPath    string            `json:"ffmpegPath"`
-	UserAgent     string            `json:"userAgent"`
-	Cookie        string            `json:"cookie"`
-	Browser       string            `json:"browser"`
-	Headers       map[string]string `json:"headers"`
-	FeedFile      string            `json:"feedFile"`
-	Verbosity     string            `json:"verbosity"`
+	URL           string `json:"url"`
+	OutputPath    string `json:"outputPath"`
+	Quality       string `json:"quality"`
+	Container     string `json:"container"`
+	Concurrency   int    `json:"concurrency"`
+	Retries       int    `json:"retries"`
+	MinIntervalMS int    `json:"minIntervalMs"`
+	Proxy         string `json:"proxy"`
+	Seasons       string `json:"seasons"`
+	Episodes      string `json:"episodes"`
+	// EpisodeKeys is an explicit per-episode selection from the series browser,
+	// each formatted "S{season}E{episode}". When present it overrides Seasons /
+	// Episodes so the exact picked set downloads.
+	EpisodeKeys []string          `json:"episodeKeys"`
+	Audio       string            `json:"audio"`
+	AudioMenu   bool              `json:"audioMenu"`
+	Force       bool              `json:"force"`
+	NoChunked   bool              `json:"noChunked"`
+	DryRun      bool              `json:"dryRun"`
+	FFmpegArgs  string            `json:"ffmpegArgs"`
+	FFmpegPath  string            `json:"ffmpegPath"`
+	UserAgent   string            `json:"userAgent"`
+	Cookie      string            `json:"cookie"`
+	Browser     string            `json:"browser"`
+	Headers     map[string]string `json:"headers"`
+	FeedFile    string            `json:"feedFile"`
+	Verbosity   string            `json:"verbosity"`
 }
 
 // resolveAuth resolves the cookie + user-agent the same way the CLI does:
@@ -233,6 +239,10 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	if err != nil {
 		return domain.RunConfig{}, err
 	}
+	selectedEpisodes, err := parseEpisodeKeys(req.EpisodeKeys)
+	if err != nil {
+		return domain.RunConfig{}, err
+	}
 	audioPref, err := kinopub.ParseAudioPreference(req.Audio)
 	if err != nil {
 		return domain.RunConfig{}, err
@@ -249,28 +259,29 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	}
 
 	cfg := domain.RunConfig{
-		InputURL:        req.URL,
-		OutputPath:      req.OutputPath,
-		MaxConcurrency:  req.Concurrency,
-		MaxRetries:      req.Retries,
-		MinIntervalMS:   req.MinIntervalMS,
-		ProxyURL:        req.Proxy,
-		Quality:         domain.Quality(req.Quality),
-		Verbosity:       verb,
-		FFmpegPath:      req.FFmpegPath,
-		Container:       cont,
-		ForceRedownload: req.Force,
-		SeasonSel:       seasonSel,
-		EpisodeSel:      episodeSel,
-		DryRun:          req.DryRun,
-		Cookie:          resolvedCookie,
-		UserAgent:       ua,
-		Headers:         req.Headers,
-		FeedFile:        req.FeedFile,
-		FFmpegExtraArgs: extraFFmpeg,
-		NoChunked:       req.NoChunked,
-		AudioPref:       audioPref,
-		AudioMenu:       req.AudioMenu,
+		InputURL:         req.URL,
+		OutputPath:       req.OutputPath,
+		MaxConcurrency:   req.Concurrency,
+		MaxRetries:       req.Retries,
+		MinIntervalMS:    req.MinIntervalMS,
+		ProxyURL:         req.Proxy,
+		Quality:          domain.Quality(req.Quality),
+		Verbosity:        verb,
+		FFmpegPath:       req.FFmpegPath,
+		Container:        cont,
+		ForceRedownload:  req.Force,
+		SeasonSel:        seasonSel,
+		EpisodeSel:       episodeSel,
+		SelectedEpisodes: selectedEpisodes,
+		DryRun:           req.DryRun,
+		Cookie:           resolvedCookie,
+		UserAgent:        ua,
+		Headers:          req.Headers,
+		FeedFile:         req.FeedFile,
+		FFmpegExtraArgs:  extraFFmpeg,
+		NoChunked:        req.NoChunked,
+		AudioPref:        audioPref,
+		AudioMenu:        req.AudioMenu,
 	}
 
 	// Auto-detect a local feed file passed in the URL field.
@@ -289,6 +300,23 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 		cfg.AudioMenuTimeout = 90 * time.Second
 	}
 	return cfg, nil
+}
+
+// parseEpisodeKeys parses "S{season}E{episode}" keys (as produced by the series
+// browser) into domain.EpisodeKey values. Unparseable keys are an error.
+func parseEpisodeKeys(keys []string) ([]domain.EpisodeKey, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make([]domain.EpisodeKey, 0, len(keys))
+	for _, k := range keys {
+		var season, episode int
+		if _, err := fmt.Sscanf(strings.TrimSpace(k), "S%dE%d", &season, &episode); err != nil {
+			return nil, fmt.Errorf("invalid episode key %q", k)
+		}
+		out = append(out, domain.EpisodeKey{Season: season, Episode: episode})
+	}
+	return out, nil
 }
 
 // splitShellArgs splits a string into args respecting simple single/double
