@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import clsx from "clsx";
 import {
   Activity,
@@ -35,11 +35,33 @@ const NAV: { id: Page; label: string; icon: any }[] = [
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
+const PAGES = NAV.map((n) => n.id);
+
+// readHashPage maps the URL hash (e.g. "#queue") to a page, so a reload or
+// browser back/forward keeps the user on the same tab instead of resetting to
+// Download.
+function readHashPage(): Page {
+  const h = window.location.hash.replace(/^#\/?/, "") as Page;
+  return PAGES.includes(h) ? h : "download";
+}
+
 export default function App() {
   const { connected, version, jobs, auth, ffmpeg, update } = useApp();
   const { t } = useI18n();
-  const [page, setPage] = useState<Page>("download");
+  const [page, setPage] = useState<Page>(readHashPage);
   const [authOpen, setAuthOpen] = useState(false);
+
+  // Keep the active tab in the URL hash so a page reload and browser
+  // back/forward restore it.
+  useEffect(() => {
+    const onHash = () => setPage(readHashPage());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  const navigate = (p: Page) => {
+    window.location.hash = p;
+    setPage(p);
+  };
 
   const activeJobs = jobs.filter((j) => !["completed", "failed", "canceled"].includes(j.status)).length;
   const audioJob = jobs.find((j) => j.pendingAudio);
@@ -53,7 +75,7 @@ export default function App() {
           {NAV.map((n) => (
             <button
               key={n.id}
-              onClick={() => setPage(n.id)}
+              onClick={() => navigate(n.id)}
               className={clsx("nav-item w-full", page === n.id && "nav-item-active")}
             >
               <n.icon className="h-[18px] w-[18px]" />
@@ -79,7 +101,7 @@ export default function App() {
           <div className="ml-auto flex items-center gap-2">
             {update?.updateAvailable && (
               <button
-                onClick={() => setPage("settings")}
+                onClick={() => navigate("settings")}
                 className="chip border-gold-500/30 bg-gold-500/[0.12] text-gold-300 hover:bg-gold-500/[0.2]"
                 title={t("A new version is available")}
               >
@@ -120,7 +142,7 @@ export default function App() {
           {NAV.map((n) => (
             <button
               key={n.id}
-              onClick={() => setPage(n.id)}
+              onClick={() => navigate(n.id)}
               className={clsx(
                 "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm",
                 page === n.id ? "bg-gold-500/[0.14] text-gold-300" : "text-slate-400",
@@ -134,9 +156,9 @@ export default function App() {
 
         <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
           {page === "download" && (
-            <DownloadPage onStarted={() => setPage("queue")} onSignIn={() => setAuthOpen(true)} />
+            <DownloadPage onStarted={() => navigate("queue")} onSignIn={() => setAuthOpen(true)} />
           )}
-          {page === "queue" && <QueuePage onNew={() => setPage("download")} />}
+          {page === "queue" && <QueuePage onNew={() => navigate("download")} />}
           {page === "library" && <LibraryPage />}
           {page === "doctor" && <DoctorPage />}
           {page === "settings" && <SettingsPage />}
