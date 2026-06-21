@@ -48,6 +48,11 @@ export function AudioMenuModal({ job }: { job: JobView }) {
     [req.tracks],
   );
 
+  const allSelected = selected.size === ordered.length && ordered.length > 0;
+  const selectAll = () => setSelected(new Set(ordered.map((t) => t.Index)));
+  const deselectAll = () => setSelected(new Set());
+  const only = (idx: number) => setSelected(new Set([idx]));
+
   return (
     <Modal
       open
@@ -73,33 +78,68 @@ export function AudioMenuModal({ job }: { job: JobView }) {
           )}
         </p>
 
+        <div className="flex items-center justify-between gap-3 text-xs">
+          <span className="text-slate-500">
+            {t("{n} of {m} selected", { n: selected.size, m: ordered.length })}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              className="rounded-md px-2 py-1 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40"
+              onClick={selectAll}
+              disabled={allSelected}
+            >
+              {t("Select all")}
+            </button>
+            <button
+              className="rounded-md px-2 py-1 text-slate-400 hover:bg-white/[0.06] hover:text-slate-200 disabled:opacity-40"
+              onClick={deselectAll}
+              disabled={selected.size === 0}
+            >
+              {t("Deselect all")}
+            </button>
+          </div>
+        </div>
+
         <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
           {ordered.map((tr) => {
             const on = selected.has(tr.Index);
             return (
-              <button
+              <div
                 key={tr.Index}
-                onClick={() => toggle(tr.Index)}
-                className={`flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition ${
+                className={`group flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 transition ${
                   on
                     ? "border-gold-500/40 bg-gold-500/[0.08]"
                     : "border-white/[0.06] bg-ink-900/40 hover:border-white/[0.12]"
                 }`}
               >
-                <span
-                  className={`grid h-5 w-5 shrink-0 place-items-center rounded-md border ${
-                    on ? "border-gold-500 bg-gold-500 text-ink-950" : "border-white/20"
-                  }`}
+                <button
+                  type="button"
+                  onClick={() => toggle(tr.Index)}
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 >
-                  {on && <Check className="h-3.5 w-3.5" />}
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium text-slate-200">{tr.Name}</span>
-                  {tr.Language && (
-                    <span className="text-xs uppercase tracking-wide text-slate-500">{tr.Language}</span>
-                  )}
-                </span>
-              </button>
+                  <span
+                    className={`grid h-5 w-5 shrink-0 place-items-center rounded-md border ${
+                      on ? "border-gold-500 bg-gold-500 text-ink-950" : "border-white/20"
+                    }`}
+                  >
+                    {on && <Check className="h-3.5 w-3.5" />}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium text-slate-200">{tr.Name}</span>
+                    {tr.Language && (
+                      <span className="text-xs uppercase tracking-wide text-slate-500">{tr.Language}</span>
+                    )}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => only(tr.Index)}
+                  className="shrink-0 rounded-md border border-white/[0.06] px-2 py-1 text-xs text-slate-500 transition hover:border-gold-500/30 hover:bg-white/[0.06] hover:text-gold-300"
+                  title={t("Only this")}
+                >
+                  {t("Only this")}
+                </button>
+              </div>
             );
           })}
         </div>

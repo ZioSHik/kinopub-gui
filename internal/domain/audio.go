@@ -291,12 +291,29 @@ func ExtractAudioKeywords(track AudioTrackInfo) []string {
 // chosen tracks across episodes. It derives Include patterns from the chosen
 // tracks' distinctive keywords and Prefer hints from their languages so a dub
 // missing in some episode falls back to another track in the same language.
+//
+// When only some tracks are chosen, it also derives Exclude patterns from the
+// distinctive keywords of the UN-chosen tracks. Without this, an un-chosen track
+// that shares an Include keyword with a chosen one — e.g. a "10. … R5 (RUS) AC3"
+// codec variant of the chosen "01. … R5 (RUS)" dub — would leak back in through
+// Include's substring matching, so unchecking it would have no effect. Only
+// keywords that match no chosen track are excluded, so a chosen track is never
+// dropped. (A still-unresolved edge: choosing only the AC3 variant cannot drop
+// the plain variant, since the plain track's keywords are a subset of the AC3
+// track's — there is no distinguishing keyword to exclude it by.)
 func BuildAudioPreference(tracks []AudioTrackInfo, chosen []int) AudioPreference {
+	chosenSet := make(map[int]bool, len(chosen))
+	for _, idx := range chosen {
+		if idx >= 0 && idx < len(tracks) {
+			chosenSet[idx] = true
+		}
+	}
+
 	var include, prefer []string
 	seenInc := make(map[string]bool)
 	seenPref := make(map[string]bool)
-	for _, idx := range chosen {
-		if idx < 0 || idx >= len(tracks) {
+	for idx := 0; idx < len(tracks); idx++ {
+		if !chosenSet[idx] {
 			continue
 		}
 		for _, kw := range ExtractAudioKeywords(tracks[idx]) {
@@ -315,5 +332,41 @@ func BuildAudioPreference(tracks []AudioTrackInfo, chosen []int) AudioPreference
 			prefer = append(prefer, lang)
 		}
 	}
-	return AudioPreference{Include: include, Prefer: prefer}
+
+	pref := AudioPreference{Include: include, Prefer: prefer}
+
+	if len(chosenSet) > 0 && len(chosenSet) < len(tracks) {
+		var exclude []string
+		seenExc := make(map[string]bool)
+		for idx := 0; idx < len(tracks); idx++ {
+			if chosenSet[idx] {
+				continue
+			}
+			for _, kw := range ExtractAudioKeywords(tracks[idx]) {
+				key := strings.ToLower(kw)
+				if seenExc[key] {
+					continue
+				}
+				if anyChosenMatches(tracks, chosenSet, kw) {
+					continue // would also drop a chosen track — unsafe
+				}
+				seenExc[key] = true
+				exclude = append(exclude, kw)
+			}
+		}
+		pref.Exclude = exclude
+	}
+
+	return pref
+}
+
+// anyChosenMatches reports whether pattern matches any chosen track, used to
+// avoid building an Exclude pattern that would drop a track the user kept.
+func anyChosenMatches(tracks []AudioTrackInfo, chosen map[int]bool, pattern string) bool {
+	for idx := range chosen {
+		if idx >= 0 && idx < len(tracks) && audioMatches(tracks[idx], pattern) {
+			return true
+		}
+	}
+	return false
 }

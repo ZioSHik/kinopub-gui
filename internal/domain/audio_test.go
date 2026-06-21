@@ -159,6 +159,35 @@ func TestBuildAudioPreference_MultipleChoices(t *testing.T) {
 	}
 }
 
+func TestBuildAudioPreference_UnchecksAC3CodecVariant(t *testing.T) {
+	// Reproduces the reported bug: two tracks are the same "R5" dub, one is an
+	// AC3 codec variant. Unchecking the AC3 one (keeping only the plain R5) must
+	// actually drop it, even though both names contain "R5".
+	tracks := []AudioTrackInfo{
+		{Index: 0, Name: "01. Многоголосый. R5 (RUS)", Language: "rus"},
+		{Index: 1, Name: "02. Дубляж. Пифагор (RUS)", Language: "rus"},
+		{Index: 2, Name: "10. Многоголосый. R5 (RUS) AC3", Language: "rus"},
+	}
+
+	// Keep only the plain R5 dub (index 0).
+	pref := BuildAudioPreference(tracks, []int{0})
+	if got := SelectAudio(tracks, pref); !reflect.DeepEqual(got, []int{0}) {
+		t.Fatalf("keep only plain R5: got %v, want [0]; pref=%+v", got, pref)
+	}
+
+	// "Select only this" on the Пифагор dub keeps just it.
+	pref2 := BuildAudioPreference(tracks, []int{1})
+	if got := SelectAudio(tracks, pref2); !reflect.DeepEqual(got, []int{1}) {
+		t.Fatalf("keep only Пифагор: got %v, want [1]; pref=%+v", got, pref2)
+	}
+
+	// Keeping everything except the AC3 variant drops only the AC3 track.
+	pref3 := BuildAudioPreference(tracks, []int{0, 1})
+	if got := SelectAudio(tracks, pref3); !reflect.DeepEqual(got, []int{0, 1}) {
+		t.Fatalf("drop AC3 only: got %v, want [0 1]; pref=%+v", got, pref3)
+	}
+}
+
 func TestDeriveAudioPrefer(t *testing.T) {
 	got := DeriveAudioPrefer(tracksA, []string{"anilibria"})
 	if !reflect.DeepEqual(got, []string{"rus"}) {

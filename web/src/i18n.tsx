@@ -202,6 +202,10 @@ const RU: Record<string, string> = {
   "Keep all": "Оставить все",
   "Download selected ({n})": "Скачать выбранные ({n})",
   "Failed to submit selection": "Не удалось отправить выбор",
+  "{n} of {m} selected": "выбрано {n} из {m}",
+  "Select all": "Выбрать все",
+  "Deselect all": "Снять все",
+  "Only this": "Только эту",
 
   // Dir picker
   "Choose a folder": "Выбор папки",
