@@ -1,0 +1,24 @@
+# 2026/05/31 16:41:37.290782 [TestProperty8_MediaEnumerationRecoversAllTracks] [rapid] draw numAudio: 1
+# 2026/05/31 16:41:37.290826 [TestProperty8_MediaEnumerationRecoversAllTracks] [rapid] draw numSubs: 0
+# 2026/05/31 16:41:37.290830 [TestProperty8_MediaEnumerationRecoversAllTracks] [rapid] draw audio_0: mediaresolver.audioTrackDef{Name:" ", Language:"eng", GroupID:"0"}
+# 2026/05/31 16:41:37.290896 [TestProperty8_MediaEnumerationRecoversAllTracks] audio[0].Studio = "", want " "
+# 
+v0.4.8#6764207608993836113
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

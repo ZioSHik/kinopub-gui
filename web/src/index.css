@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-slate-200 font-sans antialiased;
+    background-image:
+      radial-gradient(900px 500px at 12% -8%, rgba(245, 158, 11, 0.10), transparent 60%),
+      radial-gradient(800px 600px at 100% 0%, rgba(244, 63, 94, 0.07), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    background: rgba(245, 158, 11, 0.3);
+  }
+
+  /* Slim, themed scrollbars. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2c2c3b transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: #26262f;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #34344a;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/[0.06] bg-ink-850/80 shadow-card backdrop-blur-sm;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-white/[0.08] bg-ink-900/70 px-3.5 py-2.5 text-sm text-slate-100
+      placeholder:text-slate-500 outline-none transition
+      focus:border-gold-500/60 focus:ring-2 focus:ring-gold-500/20;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400;
+  }
+
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold
+      transition active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45;
+  }
+
+  .btn-primary {
+    @apply btn bg-gradient-to-br from-gold-400 to-gold-600 text-ink-950 shadow-glow hover:brightness-110;
+  }
+
+  .btn-ghost {
+    @apply btn border border-white/[0.08] bg-white/[0.02] text-slate-200 hover:bg-white/[0.06];
+  }
+
+  .btn-danger {
+    @apply btn border border-ember-500/30 bg-ember-500/10 text-ember-400 hover:bg-ember-500/20;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-400 transition
+      hover:bg-white/[0.04] hover:text-slate-100;
+  }
+
+  .nav-item-active {
+    @apply bg-gold-500/[0.12] text-gold-300 hover:bg-gold-500/[0.16] hover:text-gold-200;
+  }
+}

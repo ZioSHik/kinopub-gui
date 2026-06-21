@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build web UI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+
+          # All targets are cross-compiled on the Linux runner, so CGO is off
+          # (CGO_ENABLED=0). The only CGO-gated feature is the optional Yandex
+          # keychain cookie import on macOS; pasting a Cookie header always works,
+          # and a full-CGO macOS build can be produced locally via `make release-gui`
+          # on a Mac. Keeping CGO off here makes every release artifact static and
+          # reproducible.
+          export CGO_ENABLED=0
+
+          # CLI
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="$LDFLAGS" -o kinopub-darwin-arm64  ./cmd/kinopub
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-darwin-amd64  ./cmd/kinopub
+          GOOS=linux   GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-linux-amd64   ./cmd/kinopub
+          GOOS=linux   GOARCH=arm64 go build -ldflags="$LDFLAGS" -o kinopub-linux-arm64   ./cmd/kinopub
+          GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-windows-amd64.exe ./cmd/kinopub
+          # Termux (Android): GOOS=android избегает faccessat2 syscall,
+          # который Android блокирует через seccomp (SIGSYS вместо ENOSYS).
+          GOOS=android GOARCH=arm64 go build -ldflags="$LDFLAGS" -o kinopub-android-arm64 ./cmd/kinopub
+
+          # GUI (embeds the web UI built above)
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="$LDFLAGS" -o kinopub-gui-darwin-arm64     ./cmd/kinopub-gui
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-gui-darwin-amd64     ./cmd/kinopub-gui
+          GOOS=linux   GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-gui-linux-amd64      ./cmd/kinopub-gui
+          GOOS=linux   GOARCH=arm64 go build -ldflags="$LDFLAGS" -o kinopub-gui-linux-arm64      ./cmd/kinopub-gui
+          GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o kinopub-gui-windows-amd64.exe ./cmd/kinopub-gui
+
+          # Архивы для Homebrew (требует .tar.gz)
+          for bin in kinopub-darwin-arm64 kinopub-darwin-amd64 kinopub-linux-amd64 kinopub-linux-arm64 \
+                     kinopub-gui-darwin-arm64 kinopub-gui-darwin-amd64 kinopub-gui-linux-amd64 kinopub-gui-linux-arm64; do
+            tar -czf "${bin}.tar.gz" "$bin"
+          done
+          zip kinopub-windows-amd64.zip kinopub-windows-amd64.exe
+          zip kinopub-gui-windows-amd64.zip kinopub-gui-windows-amd64.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            kinopub-darwin-arm64
+            kinopub-darwin-arm64.tar.gz
+            kinopub-darwin-amd64
+            kinopub-darwin-amd64.tar.gz
+            kinopub-linux-amd64
+            kinopub-linux-amd64.tar.gz
+            kinopub-linux-arm64
+            kinopub-linux-arm64.tar.gz
+            kinopub-windows-amd64.exe
+            kinopub-windows-amd64.zip
+            kinopub-android-arm64
+            kinopub-gui-darwin-arm64
+            kinopub-gui-darwin-arm64.tar.gz
+            kinopub-gui-darwin-amd64
+            kinopub-gui-darwin-amd64.tar.gz
+            kinopub-gui-linux-amd64
+            kinopub-gui-linux-amd64.tar.gz
+            kinopub-gui-linux-arm64
+            kinopub-gui-linux-arm64.tar.gz
+            kinopub-gui-windows-amd64.exe
+            kinopub-gui-windows-amd64.zip

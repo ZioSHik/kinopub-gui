@@ -1,0 +1,41 @@
+.kiro
+
+# Built binaries
+/kinopub
+/kinopub-gui
+/kinopub-darwin-arm64
+/kinopub-darwin-amd64
+/kinopub-linux-amd64
+/kinopub-linux-arm64
+/kinopub-windows-amd64.exe
+/kinopub-android-arm64
+/kinopub-gui-darwin-arm64
+/kinopub-gui-darwin-amd64
+/kinopub-gui-linux-amd64
+/kinopub-gui-linux-arm64
+/kinopub-gui-windows-amd64.exe
+# CLI/GUI release archives produced by `make release` / the release workflow.
+/*.tar.gz
+/*.zip
+
+# Test artifacts
+*.test
+*.out
+
+# OS files
+.DS_Store
+
+# Local test data
+s1e1.html
+
+# Frontend
+web/node_modules/
+web/.vite/
+# NOTE: web/dist/ is intentionally committed — it is embedded into the GUI binary
+# via //go:embed all:dist in web/embed.go, so a clean `go build`/`go install`
+# works without Node. The explicit un-ignore below makes any future accidental
+# `dist/` rule a no-op for the embedded directory.
+!web/dist/
+
+# Tooling artifacts
+.playwright-mcp/
