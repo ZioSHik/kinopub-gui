@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // guiChooser implements domain.AudioChooser by surfacing the available audio

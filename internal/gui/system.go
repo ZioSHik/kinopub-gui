@@ -14,91 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/niazlv/kinopub-downloader/internal/lib/browsercookies"
-	"github.com/niazlv/kinopub-downloader/internal/lib/credstore"
 )
-
-// AuthStatus describes the stored credentials state for the UI.
-type AuthStatus struct {
-	LoggedIn      bool     `json:"loggedIn"`
-	UserAgent     string   `json:"userAgent,omitempty"`
-	CookiePreview string   `json:"cookiePreview,omitempty"`
-	CookieKeys    []string `json:"cookieKeys,omitempty"`
-}
-
-// isAuthed reports whether usable credentials are stored. Every functional
-// endpoint is gated behind this — nothing works until the user signs in.
-func isAuthed() bool {
-	creds, err := credstore.Load()
-	return err == nil && !creds.IsEmpty()
-}
-
-func authStatus() AuthStatus {
-	creds, err := credstore.Load()
-	if err != nil || creds.IsEmpty() {
-		return AuthStatus{LoggedIn: false}
-	}
-	return AuthStatus{
-		LoggedIn:      true,
-		UserAgent:     creds.UserAgent,
-		CookiePreview: maskCookie(creds.Cookie),
-		CookieKeys:    cookieKeys(creds.Cookie),
-	}
-}
-
-// cookieKeys extracts the cookie names (not values) for display.
-func cookieKeys(cookie string) []string {
-	var keys []string
-	for _, part := range strings.Split(cookie, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if i := strings.Index(part, "="); i > 0 {
-			keys = append(keys, part[:i])
-		}
-	}
-	return keys
-}
-
-// maskCookie shows only enough of the cookie to confirm it's set.
-func maskCookie(cookie string) string {
-	cookie = strings.TrimSpace(cookie)
-	if len(cookie) <= 12 {
-		return strings.Repeat("•", len(cookie))
-	}
-	return cookie[:6] + "…" + cookie[len(cookie)-4:]
-}
-
-// LoginRequest is the body of POST /api/auth/login.
-type LoginRequest struct {
-	Cookie    string `json:"cookie"`
-	UserAgent string `json:"userAgent"`
-	Browser   string `json:"browser"`
-}
-
-func doLogin(req LoginRequest) (AuthStatus, error) {
-	cookie := strings.TrimSpace(req.Cookie)
-	if cookie == "" && req.Browser != "" {
-		ck, err := browsercookies.Load(strings.ToLower(req.Browser), "kino.pub")
-		if err != nil {
-			return AuthStatus{}, fmt.Errorf("could not load cookies from browser %q: %w", req.Browser, err)
-		}
-		cookie = ck
-	}
-	if cookie == "" {
-		return AuthStatus{}, fmt.Errorf("no cookies provided — paste a Cookie header or pick a browser")
-	}
-	ua := strings.TrimSpace(req.UserAgent)
-	if ua == "" {
-		ua = defaultUserAgent
-	}
-	if err := credstore.Save(credstore.Credentials{Cookie: cookie, UserAgent: ua}); err != nil {
-		return AuthStatus{}, err
-	}
-	return authStatus(), nil
-}
 
 // FFmpegStatus reports availability of ffmpeg/ffprobe.
 type FFmpegStatus struct {
@@ -236,14 +152,6 @@ func proxyImage(w http.ResponseWriter, r *http.Request, rawURL string) {
 
 	headers := map[string]string{"Referer": "https://kino.pub/"}
 	ua := defaultUserAgent
-	if creds, err := credstore.Load(); err == nil {
-		if creds.UserAgent != "" {
-			ua = creds.UserAgent
-		}
-		if isKinoPubHost(u.Hostname()) {
-			headers["Cookie"] = creds.Cookie
-		}
-	}
 
 	ctx, cancel := contextWithTimeout(15 * time.Second)
 	defer cancel()

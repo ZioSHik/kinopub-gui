@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/logx"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/logx"
 
 	"pgregory.net/rapid"
 )

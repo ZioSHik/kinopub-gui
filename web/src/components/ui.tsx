@@ -101,8 +101,14 @@ export function Modal({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm sm:p-8">
-      <div className="absolute inset-0" onClick={onClose} />
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:p-8">
+      {/* Backdrop. The blur lives here (a fixed, non-scrolling layer) rather
+          than on the scrolling container above, so scrolling the modal doesn't
+          repaint the blur every frame — that caused visible flicker in
+          Chromium/Yandex. Dismiss on a backdrop press, not a click: a native
+          <select> option click in some browsers (e.g. Yandex) lands on the
+          backdrop and would otherwise close the modal mid-interaction. */}
+      <div className="fixed inset-0 backdrop-blur-sm" onMouseDown={onClose} />
       <div
         className={clsx(
           "card relative my-auto w-full animate-fade-in p-6",

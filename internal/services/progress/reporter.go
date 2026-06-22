@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/logx"
-	"github.com/niazlv/kinopub-downloader/internal/lib/termx"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/logx"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/termx"
 )
 
 // Indentation (in columns) for each row kind in the live display. Bars are

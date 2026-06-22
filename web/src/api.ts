@@ -91,9 +91,6 @@ export interface JobView {
 
 export interface AuthStatus {
   loggedIn: boolean;
-  userAgent?: string;
-  cookiePreview?: string;
-  cookieKeys?: string[];
 }
 
 export interface FFmpegStatus {
@@ -139,9 +136,127 @@ export interface Settings {
 export interface Snapshot {
   version: string;
   jobs: JobView[];
-  auth: AuthStatus;
+  kpauth: KPStatus;
   ffmpeg: FFmpegStatus;
   settings: Settings;
+}
+
+// ---------------------------------------------------------------------------
+// Official kino.pub API (device-code auth + discovery)
+// ---------------------------------------------------------------------------
+
+export interface KPStatus {
+  loggedIn: boolean;
+  pending: boolean;
+  userCode?: string;
+  verificationUri?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
+export interface KPUser {
+  username: string;
+  avatar?: string;
+  subscriptionActive: boolean;
+  subscriptionDays: number;
+  subscriptionEnd?: number;
+}
+
+export interface StreamInfo {
+  manifestUrl: string;
+  playUrl: string; // same-origin signed proxy URL for hls.js
+  title: string;
+}
+
+export interface DiscoverItem {
+  id: string;
+  type: string;
+  title: string;
+  originalTitle?: string;
+  year: number;
+  poster: string;
+  director?: string;
+  rating: number;
+  imdbRating: number;
+  kinopoiskRating: number;
+  genres?: string[];
+  isSerial: boolean;
+  subtitle?: string;
+  watchedAt?: number;
+  season?: number;
+  episode?: number;
+}
+
+export interface DiscoverPage {
+  items: DiscoverItem[];
+  page: number;
+  hasMore: boolean;
+  total: number;
+}
+
+export interface DiscoverAudio {
+  index: number;
+  lang: string;
+  type: string;
+  author: string;
+  label: string;
+  filter: string;
+}
+
+export interface DiscoverEpisode {
+  season: number;
+  episode: number;
+  title: string;
+  watched: boolean;
+}
+
+export interface DiscoverSeason {
+  number: number;
+  episodes: DiscoverEpisode[];
+}
+
+export interface DiscoverDetail extends DiscoverItem {
+  plot?: string;
+  cast?: string;
+  countries?: string[];
+  durationMin?: number;
+  audios: DiscoverAudio[];
+  seasons?: DiscoverSeason[];
+  episodeCount: number;
+  itemUrl: string;
+}
+
+export interface DiscoverCollection {
+  id: string;
+  title: string;
+  poster: string;
+}
+
+export interface DiscoverBookmark {
+  id: string;
+  title: string;
+  count: number;
+}
+
+export interface NamedRef {
+  id: string;
+  title: string;
+}
+
+export interface ItemsQuery {
+  type?: string;
+  sort?: string;
+  genre?: string;
+  country?: string;
+  yearFrom?: number;
+  yearTo?: number;
+  imdbFrom?: number;
+  imdbTo?: number;
+  kpFrom?: number;
+  kpTo?: number;
+  ac3?: boolean;
+  subtitles?: boolean;
+  page?: number;
 }
 
 export interface RunRequest {
@@ -164,10 +279,6 @@ export interface RunRequest {
   ffmpegArgs: string;
   ffmpegPath: string;
   userAgent: string;
-  cookie: string;
-  browser: string;
-  headers: Record<string, string> | null;
-  feedFile: string;
   verbosity: string;
 }
 
@@ -242,11 +353,6 @@ export interface DoctorRequest {
   outputDir: string;
   fix: boolean;
   cleanTmp: boolean;
-  skipProbe: boolean;
-  cookie: string;
-  browser: string;
-  userAgent: string;
-  proxy: string;
 }
 
 export interface DoctorIssue {
@@ -266,7 +372,6 @@ export interface DoctorReport {
   seriesTitle?: string;
   totalInState: number;
   healthy: number;
-  skipped: number;
   fixed: boolean;
   hasIssues: boolean;
   issues: DoctorIssue[] | null;
@@ -311,10 +416,6 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 
 export const api = {
   state: () => req<Snapshot>("GET", "/api/state"),
-  auth: () => req<AuthStatus>("GET", "/api/auth"),
-  login: (body: { cookie: string; userAgent: string; browser: string }) =>
-    req<AuthStatus>("POST", "/api/auth/login", body),
-  logout: () => req<AuthStatus>("POST", "/api/auth/logout"),
   ffmpeg: () => req<FFmpegStatus>("GET", "/api/ffmpeg"),
   deps: () => req<DepsView>("GET", "/api/deps"),
   installDeps: () => req<DepsView>("POST", "/api/deps/install"),
@@ -333,8 +434,66 @@ export const api = {
   doctor: (r: DoctorRequest) => req<DoctorReport>("POST", "/api/doctor", r),
   library: () => req<LibraryResponse>("GET", "/api/library"),
   deleteLibrary: (dir: string) => req<{ deleted: boolean }>("POST", "/api/library/delete", { dir }),
+  deleteLibraryEpisode: (dir: string, key: string) =>
+    req<{ deleted: boolean }>("POST", "/api/library/delete-episode", { dir, key }),
   openPath: (path: string, reveal = false) => req<{ ok: boolean }>("POST", "/api/open", { path, reveal }),
   fs: (path: string) => req<FSListing>("GET", `/api/fs?path=${encodeURIComponent(path)}`),
+
+  // Official kino.pub API auth (device-code).
+  kpStatus: () => req<KPStatus>("GET", "/api/kp/status"),
+  kpUser: () => req<KPUser>("GET", "/api/kp/user"),
+  kpLogin: () => req<KPStatus>("POST", "/api/kp/login"),
+  kpLogout: () => req<KPStatus>("POST", "/api/kp/logout"),
+
+  // Discovery.
+  stream: (id: string, season?: number, episode?: number) => {
+    const p = new URLSearchParams({ id });
+    if (season != null) p.set("season", String(season));
+    if (episode != null) p.set("episode", String(episode));
+    return req<StreamInfo>("GET", `/api/discover/stream?${p.toString()}`);
+  },
+  discoverSearch: (q: string, page = 1) =>
+    req<DiscoverPage>("GET", `/api/discover/search?q=${encodeURIComponent(q)}&page=${page}`),
+  discoverItems: (query: ItemsQuery) => {
+    const p = new URLSearchParams();
+    if (query.type) p.set("type", query.type);
+    if (query.sort) p.set("sort", query.sort);
+    if (query.genre) p.set("genre", query.genre);
+    if (query.country) p.set("country", query.country);
+    if (query.yearFrom) p.set("yearFrom", String(query.yearFrom));
+    if (query.yearTo) p.set("yearTo", String(query.yearTo));
+    if (query.imdbFrom) p.set("imdbFrom", String(query.imdbFrom));
+    if (query.imdbTo) p.set("imdbTo", String(query.imdbTo));
+    if (query.kpFrom) p.set("kpFrom", String(query.kpFrom));
+    if (query.kpTo) p.set("kpTo", String(query.kpTo));
+    if (query.ac3) p.set("ac3", "1");
+    if (query.subtitles) p.set("subtitles", "1");
+    if (query.page) p.set("page", String(query.page));
+    return req<DiscoverPage>("GET", `/api/discover/items?${p.toString()}`);
+  },
+  discoverCollections: (sort = "", page = 1) =>
+    req<{ items: DiscoverCollection[] }>(
+      "GET",
+      `/api/discover/collections?sort=${encodeURIComponent(sort)}&page=${page}`,
+    ),
+  discoverCollection: (id: string, page = 1) =>
+    req<DiscoverPage>("GET", `/api/discover/collection?id=${encodeURIComponent(id)}&page=${page}`),
+  discoverBookmarks: () => req<{ items: DiscoverBookmark[] }>("GET", "/api/discover/bookmarks"),
+  discoverBookmark: (id: string, page = 1) =>
+    req<DiscoverPage>("GET", `/api/discover/bookmark?id=${encodeURIComponent(id)}&page=${page}`),
+  discoverGenres: (type?: string) =>
+    req<{ items: NamedRef[] }>("GET", `/api/discover/genres${type ? `?type=${encodeURIComponent(type)}` : ""}`),
+  discoverCountries: () => req<{ items: NamedRef[] }>("GET", "/api/discover/countries"),
+  discoverHistory: (page = 1) => req<DiscoverPage>("GET", `/api/discover/history?page=${page}`),
+  discoverWatching: (subscribed = false, type = "serials", page = 1) =>
+    req<DiscoverPage>(
+      "GET",
+      `/api/discover/watching?type=${type}&subscribed=${subscribed ? 1 : 0}&page=${page}`,
+    ),
+  discoverItem: (id: string) =>
+    req<DiscoverDetail>("GET", `/api/discover/item?id=${encodeURIComponent(id)}`),
+  discoverSimilar: (id: string) =>
+    req<{ items: DiscoverItem[] }>("GET", `/api/discover/similar?id=${encodeURIComponent(id)}`),
 };
 
 export const imgURL = (u?: string) => (u ? `/api/img?u=${encodeURIComponent(u)}` : "");

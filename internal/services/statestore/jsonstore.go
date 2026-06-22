@@ -10,10 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 )
 
 const stateFileName = ".kinopub-state.json"
@@ -30,6 +31,10 @@ const stateFileName = ".kinopub-state.json"
 // directory, Load falls back to reading from the root output directory (the
 // legacy location). Writes always go to the series directory.
 type JSONStore struct {
+	// mu serializes state-file reads and read-modify-write updates so parallel
+	// episode downloads (which each call MarkCompleted) cannot clobber each
+	// other's completions or corrupt the JSON file.
+	mu        sync.Mutex
 	rootDir   string // root output directory (e.g. -o flag value or cwd)
 	seriesDir string // series subdirectory; empty until SetSeriesDir is called
 	logger    domain.Logger
@@ -49,6 +54,8 @@ func New(outputDir string, logger domain.Logger) *JSONStore {
 // feed parsing). The dir should be the full path to the series folder
 // (e.g. <output>/<Series Title>).
 func (s *JSONStore) SetSeriesDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.seriesDir = dir
 }
 
@@ -74,6 +81,14 @@ func (s *JSONStore) legacyStatePath() string {
 // When seriesDir is set and the state file is not found there, Load falls back
 // to reading from the legacy root location for backward compatibility.
 func (s *JSONStore) Load(_ context.Context, series domain.SeriesID) (domain.DownloadState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked(series)
+}
+
+// loadLocked is Load without acquiring s.mu; callers that already hold the lock
+// (MarkCompleted, SetMetadata) use it to avoid a re-entrant deadlock.
+func (s *JSONStore) loadLocked(series domain.SeriesID) (domain.DownloadState, error) {
 	empty := domain.DownloadState{
 		Series:    series,
 		Completed: make(map[string]domain.CompletedRec),
@@ -160,8 +175,11 @@ func episodeKeyString(key domain.EpisodeKey) string {
 // (temp + rename via fsutil.AtomicWrite) before the job is recorded as
 // succeeded (Req 12.1, 12.3).
 func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// Load current state (or start fresh).
-	state, _ := s.Load(context.Background(), info.Key.Series)
+	state, _ := s.loadLocked(info.Key.Series)
 
 	rec := domain.CompletedRec{
 		Season:      info.Key.Season,
@@ -201,7 +219,10 @@ func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) 
 // SetMetadata persists series-level metadata (title, description, feed URL, etc.)
 // into the state file for provenance and recovery.
 func (s *JSONStore) SetMetadata(_ context.Context, series domain.SeriesID, meta domain.SeriesMetadata) error {
-	state, _ := s.Load(context.Background(), series)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, _ := s.loadLocked(series)
 	state.Metadata = &meta
 
 	data, err := json.MarshalIndent(state, "", "  ")

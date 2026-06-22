@@ -3,7 +3,7 @@ package logx
 import (
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // Record represents a single log entry with all contextual information

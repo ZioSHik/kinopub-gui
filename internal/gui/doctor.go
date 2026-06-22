@@ -8,14 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/httpx"
-	"github.com/niazlv/kinopub-downloader/internal/services/doctor"
-	"github.com/niazlv/kinopub-downloader/internal/services/feedparser"
-	"github.com/niazlv/kinopub-downloader/internal/services/inputresolver"
-	"github.com/niazlv/kinopub-downloader/internal/services/mediaresolver"
-	"github.com/niazlv/kinopub-downloader/internal/services/pagescraper"
-	"github.com/niazlv/kinopub-downloader/internal/services/proxyprovider"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/services/doctor"
 )
 
 // DoctorRequest is the body of POST /api/doctor.
@@ -23,11 +17,6 @@ type DoctorRequest struct {
 	OutputDir string `json:"outputDir"`
 	Fix       bool   `json:"fix"`
 	CleanTmp  bool   `json:"cleanTmp"`
-	SkipProbe bool   `json:"skipProbe"`
-	Cookie    string `json:"cookie"`
-	Browser   string `json:"browser"`
-	UserAgent string `json:"userAgent"`
-	Proxy     string `json:"proxy"`
 }
 
 // DoctorIssueView is a serialized doctor.Issue.
@@ -49,7 +38,6 @@ type DoctorReportView struct {
 	SeriesTitle  string            `json:"seriesTitle,omitempty"`
 	TotalInState int               `json:"totalInState"`
 	Healthy      int               `json:"healthy"`
-	Skipped      int               `json:"skipped"`
 	Fixed        bool              `json:"fixed"`
 	HasIssues    bool              `json:"hasIssues"`
 	Issues       []DoctorIssueView `json:"issues"`
@@ -57,35 +45,12 @@ type DoctorReportView struct {
 }
 
 func runDoctor(ctx context.Context, req DoctorRequest) (*DoctorReportView, error) {
-	cookie, ua, err := resolveAuth(req.Cookie, req.Browser, req.UserAgent)
-	if err != nil {
-		// Auth failure here isn't fatal — duration probing just gets skipped.
-		cookie, ua = "", defaultUserAgent
-	}
-
 	logger, capture := newCaptureLogger(domain.VerbosityNormal)
 
-	proxyProv, err := proxyprovider.New(req.Proxy)
-	if err != nil {
-		return nil, err
-	}
-	auth := domain.RequestAuth{
-		Cookie:    cookie,
-		UserAgent: ua,
-		Headers:   map[string]string{"Referer": "https://kino.pub/"},
-	}
-	httpClient := httpx.WithAuth(proxyProv.HTTPClient(), auth)
-
-	var resolverOpts []inputresolver.Option
-	if !auth.IsZero() {
-		resolverOpts = append(resolverOpts, inputresolver.WithPageScraper(pagescraper.New(httpClient, logger)))
-	}
-	deps := doctor.Deps{
-		Logger:        logger,
-		InputResolver: inputresolver.New(logger, resolverOpts...),
-		FeedParser:    feedparser.New(httpClient, logger),
-		MediaResolver: mediaresolver.New(httpClient, makeRunOutput(), logger, auth),
-	}
+	// API-only build: the doctor verifies files against the state file
+	// (presence + recorded size) and cleans orphan temp files. Source-duration
+	// re-resolution (cookie/RSS) was removed, so no resolvers are wired.
+	deps := doctor.Deps{Logger: logger}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
@@ -106,7 +71,6 @@ func runDoctor(ctx context.Context, req DoctorRequest) (*DoctorReportView, error
 			OutputDir: dir,
 			Fix:       req.Fix,
 			CleanTmp:  req.CleanTmp,
-			SkipProbe: req.SkipProbe,
 		})
 		if err != nil {
 			if firstErr == nil {
@@ -123,7 +87,6 @@ func runDoctor(ctx context.Context, req DoctorRequest) (*DoctorReportView, error
 		}
 		view.TotalInState += report.TotalInState
 		view.Healthy += report.Healthy
-		view.Skipped += report.Skipped
 		if report.HasIssues() {
 			view.HasIssues = true
 		}

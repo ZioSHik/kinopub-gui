@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 
 	"pgregory.net/rapid"
 )
@@ -22,29 +22,23 @@ func TestProperty44_MissingDependencyDetectedBeforeWork(t *testing.T) {
 		// Start with a fully valid Dependencies struct (all fields non-nil)
 		deps := validDeps()
 
-		// Randomly select one of the 10 dependency fields to set to nil
-		fieldIndex := rapid.IntRange(0, 9).Draw(t, "fieldIndex")
+		// Randomly select one of the 7 required dependency fields to set to nil
+		fieldIndex := rapid.IntRange(0, 6).Draw(t, "fieldIndex")
 
 		switch fieldIndex {
 		case 0:
 			deps.Logger = nil
 		case 1:
-			deps.InputResolver = nil
-		case 2:
-			deps.FeedParser = nil
-		case 3:
-			deps.MediaResolver = nil
-		case 4:
 			deps.Scheduler = nil
-		case 5:
+		case 2:
 			deps.Downloader = nil
-		case 6:
+		case 3:
 			deps.ProxyProvider = nil
-		case 7:
+		case 4:
 			deps.ProgressReporter = nil
-		case 8:
+		case 5:
 			deps.StateStore = nil
-		case 9:
+		case 6:
 			deps.OutputLayout = nil
 		}
 

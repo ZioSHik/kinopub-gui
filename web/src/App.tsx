@@ -1,67 +1,58 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import clsx from "clsx";
 import {
-  Activity,
   ArrowUpCircle,
-  Download,
+  Clapperboard,
   Library as LibraryIcon,
   ListVideo,
+  PanelLeftClose,
+  PanelLeftOpen,
   ShieldAlert,
   ShieldCheck,
   Stethoscope,
-  Settings as SettingsIcon,
+  User as UserIcon,
   Wifi,
   WifiOff,
 } from "lucide-react";
 import { useApp } from "./store";
+import type { KPStatus, KPUser } from "./api";
+import { type Page, pushRoute, useRoute } from "./router";
 import { useI18n } from "./i18n";
 import { LangSwitcher } from "./components/LangSwitcher";
+import { DiscoverPage } from "./pages/Discover";
 import { DownloadPage } from "./pages/Download";
 import { QueuePage } from "./pages/Queue";
 import { LibraryPage } from "./pages/Library";
 import { DoctorPage } from "./pages/Doctor";
 import { SettingsPage } from "./pages/Settings";
-import { AuthModal } from "./components/AuthModal";
 import { AudioMenuModal } from "./components/AudioMenuModal";
 import { Toasts } from "./components/Toasts";
 
-type Page = "download" | "queue" | "library" | "doctor" | "settings";
-
 const NAV: { id: Page; label: string; icon: any }[] = [
-  { id: "download", label: "Download", icon: Download },
+  { id: "discover", label: "Catalog", icon: Clapperboard },
   { id: "queue", label: "Queue", icon: ListVideo },
   { id: "library", label: "Library", icon: LibraryIcon },
   { id: "doctor", label: "Doctor", icon: Stethoscope },
-  { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
-const PAGES = NAV.map((n) => n.id);
-
-// readHashPage maps the URL hash (e.g. "#queue") to a page, so a reload or
-// browser back/forward keeps the user on the same tab instead of resetting to
-// Download.
-function readHashPage(): Page {
-  const h = window.location.hash.replace(/^#\/?/, "") as Page;
-  return PAGES.includes(h) ? h : "download";
-}
-
 export default function App() {
-  const { connected, version, jobs, auth, ffmpeg, update } = useApp();
+  const { connected, version, jobs, kpauth, kpUser, ffmpeg, update } = useApp();
   const { t } = useI18n();
-  const [page, setPage] = useState<Page>(readHashPage);
-  const [authOpen, setAuthOpen] = useState(false);
+  // The URL hash is the single source of truth for the active page (and, within
+  // a page, the open collection/card) so reloads and browser back/forward
+  // restore the exact view.
+  const page = useRoute().page;
+  const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem("sidebarCollapsed") === "1");
+  const toggleCollapsed = () =>
+    setCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem("sidebarCollapsed", next ? "1" : "0");
+      return next;
+    });
 
-  // Keep the active tab in the URL hash so a page reload and browser
-  // back/forward restore it.
-  useEffect(() => {
-    const onHash = () => setPage(readHashPage());
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
-  const navigate = (p: Page) => {
-    window.location.hash = p;
-    setPage(p);
-  };
+  // Top-level navigation drops any open card/collection and pushes a fresh page
+  // route, so browser-back returns to wherever the user was.
+  const navigate = (p: Page) => pushRoute({ page: p });
 
   const activeJobs = jobs.filter((j) => !["completed", "failed", "canceled"].includes(j.status)).length;
   const audioJob = jobs.find((j) => j.pendingAudio);
@@ -69,31 +60,50 @@ export default function App() {
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}
-      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-white/[0.06] bg-ink-900/60 p-4 backdrop-blur-sm md:flex">
-        <Brand />
+      <aside
+        className={clsx(
+          "sticky top-0 hidden h-screen shrink-0 flex-col border-r border-white/[0.06] bg-ink-900/60 p-3 backdrop-blur-sm transition-[width] duration-200 md:flex",
+          collapsed ? "w-[68px]" : "w-60",
+        )}
+      >
+        <div className={clsx("flex items-center", collapsed ? "flex-col gap-2" : "justify-between gap-2")}>
+          {collapsed ? <BrandMark /> : <Brand />}
+          <button
+            onClick={toggleCollapsed}
+            className="rounded-lg p-1.5 text-slate-500 transition hover:bg-white/[0.06] hover:text-slate-300"
+            title={collapsed ? t("Expand sidebar") : t("Collapse sidebar")}
+          >
+            {collapsed ? <PanelLeftOpen className="h-[18px] w-[18px]" /> : <PanelLeftClose className="h-[18px] w-[18px]" />}
+          </button>
+        </div>
         <nav className="mt-6 flex-1 space-y-1">
           {NAV.map((n) => (
             <button
               key={n.id}
               onClick={() => navigate(n.id)}
-              className={clsx("nav-item w-full", page === n.id && "nav-item-active")}
+              title={collapsed ? t(n.label) : undefined}
+              className={clsx("nav-item relative w-full", collapsed && "justify-center px-0", page === n.id && "nav-item-active")}
             >
-              <n.icon className="h-[18px] w-[18px]" />
-              <span className="flex-1 text-left">{t(n.label)}</span>
-              {n.id === "queue" && activeJobs > 0 && (
-                <span className="rounded-full bg-gold-500 px-1.5 py-0.5 text-[10px] font-bold text-ink-950">
-                  {activeJobs}
-                </span>
-              )}
+              <n.icon className="h-[18px] w-[18px] shrink-0" />
+              {!collapsed && <span className="flex-1 text-left">{t(n.label)}</span>}
+              {n.id === "queue" && activeJobs > 0 &&
+                (collapsed ? (
+                  <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-gold-500" />
+                ) : (
+                  <span className="rounded-full bg-gold-500 px-1.5 py-0.5 text-[10px] font-bold text-ink-950">
+                    {activeJobs}
+                  </span>
+                ))}
             </button>
           ))}
         </nav>
-        <SystemFooter ffmpegFound={ffmpeg.ffmpegFound} version={version} connected={connected} />
+        <ProfileCard collapsed={collapsed} kpauth={kpauth} kpUser={kpUser} onClick={() => navigate("settings")} />
+        <SystemFooter ffmpegFound={ffmpeg.ffmpegFound} version={version} connected={connected} collapsed={collapsed} />
       </aside>
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-white/[0.06] bg-ink-950/70 px-4 py-3 backdrop-blur-md md:px-8">
+        <header className="sticky top-0 z-30 flex transform-gpu items-center gap-3 border-b border-white/[0.06] bg-ink-950/70 px-4 py-3 backdrop-blur-md md:px-8">
           {/* Mobile nav */}
           <div className="flex items-center gap-1 md:hidden">
             <Brand compact />
@@ -123,16 +133,16 @@ export default function App() {
               {connected ? t("Live") : t("Reconnecting…")}
             </span>
             <button
-              onClick={() => setAuthOpen(true)}
+              onClick={() => navigate("settings")}
               className={clsx(
                 "chip transition",
-                auth.loggedIn
+                kpauth.loggedIn
                   ? "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-300 hover:bg-emerald-500/[0.14]"
                   : "border-gold-500/30 bg-gold-500/[0.1] text-gold-300 hover:bg-gold-500/[0.16]",
               )}
             >
-              {auth.loggedIn ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
-              {auth.loggedIn ? t("Signed in") : t("Sign in")}
+              {kpauth.loggedIn ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
+              {kpauth.loggedIn ? t("Signed in") : t("Sign in")}
             </button>
           </div>
         </header>
@@ -155,8 +165,11 @@ export default function App() {
         </nav>
 
         <main className="flex-1 px-4 py-6 md:px-8 md:py-8">
+          {page === "discover" && (
+            <DiscoverPage onStarted={() => navigate("queue")} onOpenSettings={() => navigate("settings")} />
+          )}
           {page === "download" && (
-            <DownloadPage onStarted={() => navigate("queue")} onSignIn={() => setAuthOpen(true)} />
+            <DownloadPage onStarted={() => navigate("queue")} onSignIn={() => navigate("settings")} />
           )}
           {page === "queue" && <QueuePage onNew={() => navigate("download")} />}
           {page === "library" && <LibraryPage />}
@@ -165,20 +178,24 @@ export default function App() {
         </main>
       </div>
 
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} />
       {audioJob && <AudioMenuModal key={audioJob.id} job={audioJob} />}
       <Toasts />
     </div>
   );
 }
 
+// BrandMark is the bare app icon. Single source of truth for the mark: the same
+// favicon.svg the browser tab uses and that package-macos.sh bakes into
+// AppIcon.icns. Stays visible even when the sidebar is collapsed.
+function BrandMark() {
+  return <img src="./favicon.svg" alt="kino.pub" className="h-9 w-9 shrink-0 rounded-xl shadow-glow" />;
+}
+
 function Brand({ compact }: { compact?: boolean }) {
   const { t } = useI18n();
   return (
     <div className="flex items-center gap-2.5">
-      <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-gold-400 to-gold-600 text-ink-950 shadow-glow">
-        <Activity className="h-5 w-5" />
-      </div>
+      <BrandMark />
       <div className={clsx(compact && "hidden sm:block")}>
         <div className="text-sm font-bold leading-tight text-slate-100">kino.pub</div>
         <div className="text-[11px] leading-tight text-slate-500">{t("downloader")}</div>
@@ -187,16 +204,93 @@ function Brand({ compact }: { compact?: boolean }) {
   );
 }
 
+// ProfileCard shows the signed-in account with subscription days, or a sign-in
+// prompt when logged out. Both states collapse to a single icon/avatar.
+function ProfileCard({
+  collapsed,
+  kpauth,
+  kpUser,
+  onClick,
+}: {
+  collapsed: boolean;
+  kpauth: KPStatus;
+  kpUser: KPUser | null;
+  onClick: () => void;
+}) {
+  const { t } = useI18n();
+
+  if (!kpauth.loggedIn) {
+    return (
+      <button
+        onClick={onClick}
+        title={collapsed ? t("Sign in") : undefined}
+        className={clsx(
+          "mb-2 flex items-center gap-2.5 rounded-xl border border-gold-500/25 bg-gold-500/[0.08] p-2.5 text-gold-300 transition hover:bg-gold-500/[0.16]",
+          collapsed && "justify-center",
+        )}
+      >
+        <ShieldAlert className="h-5 w-5 shrink-0" />
+        {!collapsed && <span className="text-sm font-medium">{t("Sign in")}</span>}
+      </button>
+    );
+  }
+
+  const active = kpUser?.subscriptionActive ?? false;
+  const days = kpUser?.subscriptionDays ?? 0;
+  const name = kpUser?.username || t("Signed in");
+  const ring = !active ? "ring-ember-500/60" : days <= 14 ? "ring-amber-400/70" : "ring-emerald-400/70";
+  const subText = !active ? "text-ember-400" : days <= 14 ? "text-amber-300" : "text-emerald-400";
+
+  return (
+    <button
+      onClick={onClick}
+      title={collapsed ? `${name} · ${active ? t("{n} days left", { n: days }) : t("No subscription")}` : undefined}
+      className={clsx(
+        "mb-2 flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-2 text-left transition hover:bg-white/[0.06]",
+        collapsed && "justify-center",
+      )}
+    >
+      <div className={clsx("grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink-800 ring-2", ring)}>
+        <UserIcon className="h-[18px] w-[18px] text-slate-300" />
+      </div>
+      {!collapsed && (
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold text-slate-200">{name}</div>
+          <div className={clsx("text-[11px] font-medium", subText)}>
+            {active ? t("{n} days left", { n: days }) : t("No subscription")}
+          </div>
+        </div>
+      )}
+    </button>
+  );
+}
+
 function SystemFooter({
   ffmpegFound,
   version,
   connected,
+  collapsed,
 }: {
   ffmpegFound: boolean;
   version: string;
   connected: boolean;
+  collapsed: boolean;
 }) {
   const { t } = useI18n();
+  if (collapsed) {
+    return (
+      <div className="flex flex-col items-center gap-2.5 border-t border-white/[0.06] pt-3">
+        <span
+          title={ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
+          className={clsx("h-2 w-2 rounded-full", ffmpegFound ? "bg-emerald-400" : "bg-ember-500")}
+        />
+        <span
+          title={connected ? t("connected") : t("reconnecting")}
+          className={clsx("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse-soft")}
+        />
+      </div>
+    );
+  }
   return (
     <div className="space-y-2 border-t border-white/[0.06] pt-3 text-xs text-slate-500">
       <div className="flex items-center gap-2">

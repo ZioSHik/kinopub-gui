@@ -16,7 +16,6 @@ type SeriesMetadata struct {
 	OriginalTitle string `json:"original_title,omitempty"`
 	Description   string `json:"description,omitempty"`
 	PosterURL     string `json:"poster_url,omitempty"`
-	FeedURL       string `json:"feed_url,omitempty"`
 	InputURL      string `json:"input_url,omitempty"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 )
 
 const stateFileName = ".kinopub-state.json"
@@ -95,22 +97,21 @@ func scanLibrary(dirs []string) LibraryResponse {
 	return resp
 }
 
-// deleteLibrarySeries removes a downloaded series directory (its files and state
-// file) from disk. For safety it only deletes a directory that (a) actually
-// contains a kinopub state file and (b) lives strictly inside one of the
-// configured library/output roots — never a root itself or an arbitrary path.
-func deleteLibrarySeries(dir string, roots []string) error {
+// resolveLibraryDir validates that dir is a real kinopub download folder safe to
+// modify: it must (a) contain a kinopub state file and (b) live strictly inside
+// one of the configured library/output roots — never a root itself or an
+// arbitrary path. It returns the cleaned absolute path.
+func resolveLibraryDir(dir string, roots []string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return err
+		return "", err
 	}
 	abs = filepath.Clean(abs)
 
 	if _, err := os.Stat(filepath.Join(abs, stateFileName)); err != nil {
-		return fmt.Errorf("not a kinopub download folder (no %s)", stateFileName)
+		return "", fmt.Errorf("not a kinopub download folder (no %s)", stateFileName)
 	}
 
-	inside := false
 	for _, root := range roots {
 		rabs, err := filepath.Abs(root)
 		if err != nil {
@@ -122,14 +123,76 @@ func deleteLibrarySeries(dir string, roots []string) error {
 		}
 		// Strictly inside: not "." (the root itself) and not escaping with "..".
 		if rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			inside = true
-			break
+			return abs, nil
 		}
 	}
-	if !inside {
-		return fmt.Errorf("folder is outside the configured library folders")
+	return "", fmt.Errorf("folder is outside the configured library folders")
+}
+
+// deleteLibrarySeries removes a downloaded series directory (its files and state
+// file) from disk, after validating it is a kinopub download folder inside a
+// configured root.
+func deleteLibrarySeries(dir string, roots []string) error {
+	abs, err := resolveLibraryDir(dir, roots)
+	if err != nil {
+		return err
 	}
 	return os.RemoveAll(abs)
+}
+
+// deleteLibraryEpisode removes a single downloaded episode's file from disk and
+// drops its record from the series state file, so a watched episode stops taking
+// up space without discarding the rest of the series. When the deleted episode
+// was the last one, the whole series folder is removed.
+func deleteLibraryEpisode(dir, key string, roots []string) error {
+	abs, err := resolveLibraryDir(dir, roots)
+	if err != nil {
+		return err
+	}
+	stateFile := filepath.Join(abs, stateFileName)
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		return fmt.Errorf("read state: %w", err)
+	}
+	var state domain.DownloadState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("parse state: %w", err)
+	}
+	rec, ok := state.Completed[key]
+	if !ok {
+		return fmt.Errorf("episode %q not found in this download", key)
+	}
+
+	// Resolve the media file relative to the series folder and confine the
+	// deletion to it, so a tampered state file can't point us at an arbitrary
+	// path. A file that's already gone is fine — the goal is that it's absent.
+	fullPath := rec.Path
+	if fullPath != "" && !filepath.IsAbs(fullPath) {
+		fullPath = filepath.Join(abs, fullPath)
+	}
+	if fullPath != "" {
+		clean := filepath.Clean(fullPath)
+		rel, rerr := filepath.Rel(abs, clean)
+		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("episode file is outside its series folder")
+		}
+		if err := os.Remove(clean); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove episode file: %w", err)
+		}
+	}
+
+	delete(state.Completed, key)
+
+	// Last episode gone → remove the whole (now-empty) series folder.
+	if len(state.Completed) == 0 {
+		return os.RemoveAll(abs)
+	}
+
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	return fsutil.AtomicWrite(stateFile, out, 0644)
 }
 
 func readLibraryState(stateFile string) (LibrarySeries, bool) {

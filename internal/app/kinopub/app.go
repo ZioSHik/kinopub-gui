@@ -3,15 +3,14 @@ package kinopub
 import (
 	"context"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
-// Dependencies holds all injectable interfaces required by the App.
+// Dependencies holds all injectable interfaces required by the App. Downloads
+// resolve via the official kino.pub API + HLS pipeline (the cookie/RSS sources
+// were removed).
 type Dependencies struct {
 	Logger           domain.Logger
-	InputResolver    domain.InputResolver
-	FeedParser       domain.FeedParser
-	MediaResolver    domain.MediaResolver
 	Scheduler        domain.Scheduler
 	Downloader       domain.Downloader
 	ProxyProvider    domain.ProxyProvider
@@ -19,9 +18,10 @@ type Dependencies struct {
 	StateStore       domain.StateStore
 	OutputLayout     domain.OutputLayout
 
-	// Optional: HLS pipeline components (nil = HLS pipeline disabled).
-	HLSDownloader domain.HLSDownloader // nil when auth unavailable
-	PageScraper   domain.PageScraper   // nil when auth unavailable
+	// HLS pipeline: an API-backed PageScraper resolves the item, HLSDownloader
+	// streams it. Both required for a download (validated below).
+	HLSDownloader domain.HLSDownloader
+	PageScraper   domain.PageScraper
 
 	// Optional: interactive audio-track picker. nil disables the menu.
 	AudioChooser domain.AudioChooser

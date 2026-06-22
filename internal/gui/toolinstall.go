@@ -57,6 +57,52 @@ func ensureManagedBinOnPath() {
 	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// systemToolDirs lists well-known locations where CLI tools such as ffmpeg are
+// installed. A GUI app launched from Finder/Spotlight/Dock does NOT inherit the
+// shell PATH — LaunchServices hands it a stripped-down PATH (/usr/bin:/bin:…)
+// that omits Homebrew, MacPorts, etc.
+func systemToolDirs() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{"/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"}
+	case "windows":
+		return nil
+	default: // linux, bsd
+		return []string{"/usr/local/bin", "/snap/bin"}
+	}
+}
+
+// ensureSystemToolsOnPath appends the standard tool directories (those that
+// exist and aren't already on PATH) so a system-installed ffmpeg is found even
+// when the process inherited the minimal PATH of a .app launch. Appended, not
+// prepended, so a managed (downloaded) ffmpeg and the user's own PATH still win.
+func ensureSystemToolsOnPath() {
+	have := make(map[string]bool)
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		have[p] = true
+	}
+	var add []string
+	for _, d := range systemToolDirs() {
+		if have[d] {
+			continue
+		}
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			continue
+		}
+		have[d] = true
+		add = append(add, d)
+	}
+	if len(add) == 0 {
+		return
+	}
+	sep := string(os.PathListSeparator)
+	if cur := os.Getenv("PATH"); cur != "" {
+		os.Setenv("PATH", cur+sep+strings.Join(add, sep))
+	} else {
+		os.Setenv("PATH", strings.Join(add, sep))
+	}
+}
+
 // archiveKind is how a downloaded tool archive is packed.
 type archiveKind int
 

@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/backoff"
-	"github.com/niazlv/kinopub-downloader/internal/lib/ratelimit"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/backoff"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/ratelimit"
 )
 
 // Config holds the scheduler's tunable parameters.

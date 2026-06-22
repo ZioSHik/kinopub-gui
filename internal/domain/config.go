@@ -60,15 +60,9 @@ type RunConfig struct {
 	// return HTTP 403 for unauthenticated requests. These fields let the user
 	// supply credentials captured from a logged-in browser session so the tool
 	// and ffmpeg can issue requests that pass Cloudflare and kino.pub auth.
-	Cookie         string            // raw Cookie header value applied to all requests
-	UserAgent      string            // User-Agent applied to all requests (must match the cf_clearance UA)
-	Headers        map[string]string // extra HTTP headers applied to all requests
-	BrowserCookies string            // browser name to auto-load kino.pub cookies from ("", "safari", "chrome", "firefox", "auto")
-
-	// FeedFile, when set, is a path to a locally saved RSS feed file. It is used
-	// instead of fetching the feed over the network — useful when the feed URL
-	// returns 403. The InputURL is still used to derive the SeriesID when present.
-	FeedFile string
+	Cookie    string            // raw Cookie header value applied to all requests
+	UserAgent string            // User-Agent applied to all requests (must match the cf_clearance UA)
+	Headers   map[string]string // extra HTTP headers applied to all requests
 
 	// FFmpegExtraArgs are additional arguments passed to ffmpeg before the output
 	// path. This allows advanced users to override encoding settings (e.g.
@@ -91,6 +85,12 @@ type RunConfig struct {
 	// AudioMenuTimeout bounds how long the interactive picker waits for input
 	// before defaulting to "keep all". Zero means use the package default.
 	AudioMenuTimeout time.Duration
+
+	// UseAPI selects the official kino.pub JSON API as the catalog/source for
+	// this run (resolving InputURL's item id via the API and emitting hls4
+	// manifests) instead of cookie-based page scraping. The download pipeline is
+	// otherwise identical. Honored by the GUI's dependency wiring.
+	UseAPI bool
 }
 
 // RequestAuth carries credentials and request-shaping headers applied to every

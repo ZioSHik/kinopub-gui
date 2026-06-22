@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // fakeHLSDownloader simulates the HLS downloader. For each episode key it can
@@ -90,9 +90,6 @@ func newRetryTestEngine(hls domain.HLSDownloader, scraper domain.PageScraper) (*
 	ss := &mockStateStore{}
 	deps := Dependencies{
 		Logger:           &mockLogger{},
-		InputResolver:    &mockInputResolver{},
-		FeedParser:       &mockFeedParser{},
-		MediaResolver:    &mockMediaResolver{},
 		Scheduler:        &mockScheduler{},
 		Downloader:       &muxingDownloader{},
 		ProxyProvider:    &mockProxyProvider{},
@@ -157,8 +154,10 @@ func TestRunHLS_DeferredRetrySucceeds(t *testing.T) {
 	}
 }
 
-// Interleaving: a deferred episode is retried after the next new episode, not
-// only at the very end.
+// Deferred retry under a single worker: a transiently-failed episode is
+// re-queued and retried once the fresh episodes drain, rather than being
+// dropped. (With concurrency > 1 a free worker picks the ready retry up in
+// parallel; this test pins one worker so the order is deterministic.)
 func TestRunHLS_DeferredRetryInterleaves(t *testing.T) {
 	hls := newFakeHLS(errors.New("unexpected EOF"))
 	key1 := domain.EpisodeKey{Series: "42", Season: 1, Episode: 1}
@@ -167,16 +166,19 @@ func TestRunHLS_DeferredRetryInterleaves(t *testing.T) {
 	e, _, _ := newRetryTestEngine(hls, &fakePageScraper{playlist: makePlaylist(3)})
 
 	cfg := retryTestConfig()
+	cfg.MaxConcurrency = 1 // single worker → deterministic dispatch order
 	if _, err := e.runHLS(context.Background(), cfg); err != nil {
 		t.Fatalf("runHLS error: %v", err)
 	}
 
-	// Expected order: E01 (fail) → E02 → E01 (retry, ok) → E03.
+	// New episodes dispatch first (E01 fails and is parked), then the parked
+	// E01 is retried after the queue of fresh episodes drains:
+	// E01 (fail) → E02 → E03 → E01 (retry, ok).
 	want := []domain.EpisodeKey{
 		{Series: "42", Season: 1, Episode: 1},
 		{Series: "42", Season: 1, Episode: 2},
-		{Series: "42", Season: 1, Episode: 1},
 		{Series: "42", Season: 1, Episode: 3},
+		{Series: "42", Season: 1, Episode: 1},
 	}
 	if len(hls.order) != len(want) {
 		t.Fatalf("call order = %v, want %v", hls.order, want)

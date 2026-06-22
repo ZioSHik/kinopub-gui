@@ -6,6 +6,7 @@ import { useI18n } from "../i18n";
 import { Field, Spinner, Toggle } from "../components/ui";
 import { DirPicker } from "../components/DirPicker";
 import { InstallFFmpeg } from "../components/InstallFFmpeg";
+import { KinopubLogin } from "../components/KinopubLogin";
 
 export function SettingsPage() {
   const { settings, ffmpeg, setSettingsLocal, toast } = useApp();
@@ -49,6 +50,8 @@ export function SettingsPage() {
         <h1 className="text-2xl font-bold text-slate-100">{t("Settings")}</h1>
         <p className="mt-1 text-sm text-slate-400">{t("Defaults applied to every new download.")}</p>
       </header>
+
+      <KinopubLogin />
 
       <div className="card space-y-4 p-5">
         <Field label={t("Default output folder")}>

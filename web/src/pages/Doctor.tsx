@@ -12,7 +12,6 @@ const KIND_LABEL: Record<string, string> = {
   SIZE_MISMATCH: "Size mismatch",
   NO_PATH: "Incomplete record",
   ORPHAN_TMP: "Orphan .tmp",
-  DURATION_MISMATCH: "Duration mismatch",
 };
 
 export function DoctorPage() {
@@ -27,7 +26,6 @@ export function DoctorPage() {
   }, [settings.outputPath]);
   const [fix, setFix] = useState(false);
   const [cleanTmp, setCleanTmp] = useState(false);
-  const [skipProbe, setSkipProbe] = useState(true);
   const [pickDir, setPickDir] = useState(false);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<DoctorReport | null>(null);
@@ -40,11 +38,6 @@ export function DoctorPage() {
         outputDir: dir,
         fix,
         cleanTmp,
-        skipProbe,
-        cookie: "",
-        browser: "",
-        userAgent: "",
-        proxy: settings.proxy,
       });
       setReport(r);
       if (r.fixed) toast(t("State repaired"), "success");
@@ -74,10 +67,9 @@ export function DoctorPage() {
           </button>
         </Field>
 
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="grid gap-2 sm:grid-cols-2">
           <Toggle label={t("Repair (--fix)")} hint={t("Remove broken entries & files")} checked={fix} onChange={setFix} />
           <Toggle label={t("Clean .tmp")} hint={t("Delete orphan temp files")} checked={cleanTmp} onChange={setCleanTmp} />
-          <Toggle label={t("Skip probe")} hint={t("Faster, no network")} checked={skipProbe} onChange={setSkipProbe} />
         </div>
 
         <button className="btn-primary" onClick={run} disabled={running || !dir}>
@@ -88,11 +80,10 @@ export function DoctorPage() {
 
       {report && (
         <div className="card animate-fade-in space-y-4 p-5">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-3 gap-3">
             <Stat label={t("In state")} value={report.totalInState} />
             <Stat label={t("Healthy")} value={report.healthy} tone="green" />
             <Stat label={t("Issues")} value={report.issues?.length || 0} tone={report.hasIssues ? "rose" : "slate"} />
-            <Stat label={t("Skipped")} value={report.skipped} />
           </div>
 
           {report.seriesTitle && (

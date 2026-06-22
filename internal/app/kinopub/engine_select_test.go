@@ -3,7 +3,7 @@ package kinopub
 import (
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func sampleSeries() domain.Series {

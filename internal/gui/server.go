@@ -14,9 +14,11 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/lib/credstore"
+	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 )
 
 // Server hosts the REST API, the SSE event stream and the embedded SPA.
@@ -30,13 +32,42 @@ type Server struct {
 	tools    *toolInstaller
 	restart  func() // set by main to re-exec the freshly installed binary
 	mux      *http.ServeMux
+
+	// kino.pub official-API device login (background poll) state.
+	kpMu    sync.Mutex
+	kpLogin *kpLoginSession
+
+	// kpLogoutGen is bumped on every logout. Each cached client captures the
+	// generation at build time and refuses to persist refreshed tokens once it
+	// changes, so a late background refresh can't resurrect a cleared session.
+	kpLogoutGen atomic.Int64
+
+	// Cached discovery client (one per server so refreshes serialize). Shared by
+	// discovery, preview and the download engine so all token refreshes funnel
+	// through one client's mutex (kino.pub rotates the refresh token each time).
+	kpClientMu     sync.Mutex
+	kpClientCached *kinopubapi.Client
+
+	// Per-process secret signing the in-app player's HLS proxy URLs, so the
+	// proxy only fetches URLs this server itself produced (not an open proxy).
+	hlsKey []byte
+	// hlsSem bounds concurrent upstream fetches to kino.pub's CDN: hls.js loads
+	// every audio/video rendition playlist at once, and the CDN rate-limits the
+	// burst with transient 403s. Smoothing the burst keeps playback reliable.
+	hlsSem chan struct{}
+
+	// uhdOK caches that this device's 4K/HEVC support has been enabled, so the
+	// API includes 2160p files. Enabled lazily on first catalog/stream use.
+	uhdMu sync.Mutex
+	uhdOK bool
 }
 
 // NewServer builds the HTTP handler. static is the embedded frontend (rooted at
 // the build output directory).
 func NewServer(version string, static fs.FS) *Server {
-	cleanupOldExecutable()   // remove a leftover binary from a previous self-update
-	ensureManagedBinOnPath() // so a previously installed ffmpeg/ffprobe is found
+	cleanupOldExecutable()    // remove a leftover binary from a previous self-update
+	ensureManagedBinOnPath()  // so a previously installed ffmpeg/ffprobe is found
+	ensureSystemToolsOnPath() // so a system ffmpeg (Homebrew, …) is found from a .app launch
 	hub := newHub()
 	s := &Server{
 		version:  version,
@@ -46,6 +77,8 @@ func NewServer(version string, static fs.FS) *Server {
 		settings: newSettingsStore(),
 		updater:  newUpdateChecker(version),
 		tools:    &toolInstaller{},
+		hlsKey:   randomKey(32),
+		hlsSem:   make(chan struct{}, 4),
 	}
 	s.routes()
 	return s
@@ -74,14 +107,29 @@ func guardLocalOnly(next http.Handler) http.Handler {
 			writeErr(w, http.StatusForbidden, "forbidden: this server only accepts loopback requests")
 			return
 		}
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
-				writeErr(w, http.StatusForbidden, "forbidden: cross-origin request")
-				return
-			}
+		if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin, r.Host) {
+			writeErr(w, http.StatusForbidden, "forbidden: cross-origin request")
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// originAllowed reports whether a request's Origin is acceptable for this
+// loopback-only control server. It accepts an exact host match, or any loopback
+// origin — so localhost ↔ 127.0.0.1 ↔ ::1 mixups and the Vite dev proxy work
+// without weakening security: a real cross-site Origin (an external domain) is
+// still rejected, and the isLoopbackHost(r.Host) check above already defeats
+// DNS-rebinding regardless of Origin.
+func originAllowed(origin, host string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Host == host {
+		return true
+	}
+	return isLoopbackHost(u.Host)
 }
 
 // isLoopbackHost reports whether the Host header refers to a loopback address.
@@ -111,9 +159,27 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 
-	mux.HandleFunc("GET /api/auth", s.handleAuthStatus)
-	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
-	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	// kino.pub official-API (device-code) auth.
+	mux.HandleFunc("GET /api/kp/status", s.handleKPStatus)
+	mux.HandleFunc("GET /api/kp/user", s.handleKPUser)
+	mux.HandleFunc("POST /api/kp/login", s.handleKPLogin)
+	mux.HandleFunc("POST /api/kp/logout", s.handleKPLogout)
+
+	// Discovery (search / tops / catalog / collections / item details).
+	mux.HandleFunc("GET /api/discover/search", s.handleDiscoverSearch)
+	mux.HandleFunc("GET /api/discover/items", s.handleDiscoverItems)
+	mux.HandleFunc("GET /api/discover/collections", s.handleDiscoverCollections)
+	mux.HandleFunc("GET /api/discover/collection", s.handleDiscoverCollection)
+	mux.HandleFunc("GET /api/discover/bookmarks", s.handleDiscoverBookmarks)
+	mux.HandleFunc("GET /api/discover/bookmark", s.handleDiscoverBookmark)
+	mux.HandleFunc("GET /api/discover/genres", s.handleDiscoverGenres)
+	mux.HandleFunc("GET /api/discover/countries", s.handleDiscoverCountries)
+	mux.HandleFunc("GET /api/discover/history", s.handleDiscoverHistory)
+	mux.HandleFunc("GET /api/discover/watching", s.handleDiscoverWatching)
+	mux.HandleFunc("GET /api/discover/item", s.handleDiscoverItem)
+	mux.HandleFunc("GET /api/discover/similar", s.handleDiscoverSimilar)
+	mux.HandleFunc("GET /api/discover/stream", s.handleDiscoverStream)
+	mux.HandleFunc("GET /api/hls", s.handleHLSProxy)
 
 	mux.HandleFunc("GET /api/ffmpeg", s.handleFFmpeg)
 
@@ -139,6 +205,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/doctor", s.handleDoctor)
 	mux.HandleFunc("GET /api/library", s.handleLibrary)
 	mux.HandleFunc("POST /api/library/delete", s.handleDeleteLibrary)
+	mux.HandleFunc("POST /api/library/delete-episode", s.handleDeleteLibraryEpisode)
 	mux.HandleFunc("POST /api/open", s.handleOpenPath)
 	mux.HandleFunc("GET /api/fs", s.handleFS)
 	mux.HandleFunc("GET /api/img", s.handleImage)
@@ -157,7 +224,7 @@ func (s *Server) snapshot() map[string]any {
 	return map[string]any{
 		"version":  s.version,
 		"jobs":     s.mgr.list(),
-		"auth":     authStatus(),
+		"kpauth":   s.kpStatus(),
 		"ffmpeg":   ffmpegStatus(),
 		"settings": s.settings.get(),
 	}
@@ -236,39 +303,6 @@ func writeWithDeadline(rc *http.ResponseController, w io.Writer, p []byte) error
 }
 
 // ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, authStatus())
-}
-
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req LoginRequest
-	if err := decodeJSON(w, r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	st, err := doLogin(req)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	s.hub.broadcast(Event{Type: "auth", Data: st})
-	writeJSON(w, http.StatusOK, st)
-}
-
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if err := credstore.Clear(); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	st := authStatus()
-	s.hub.broadcast(Event{Type: "auth", Data: st})
-	writeJSON(w, http.StatusOK, st)
-}
-
-// ---------------------------------------------------------------------------
 // FFmpeg / settings
 // ---------------------------------------------------------------------------
 
@@ -337,6 +371,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.invalidateKPClient() // proxy may have changed → rebuild the client
 	s.hub.broadcast(Event{Type: "settings", Data: saved})
 	writeJSON(w, http.StatusOK, saved)
 }
@@ -387,8 +422,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if cfg.InputURL == "" && cfg.FeedFile == "" {
-		writeErr(w, http.StatusBadRequest, "a kino.pub URL or feed file is required")
+	if cfg.InputURL == "" {
+		writeErr(w, http.StatusBadRequest, "a kino.pub URL is required")
 		return
 	}
 	// ffmpeg is required for real downloads (not dry-run).
@@ -399,11 +434,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	input := cfg.InputURL
-	if input == "" {
-		input = cfg.FeedFile
-	}
-	job := newJob(s.mgr.nextID(), input, cfg)
+	job := newJob(s.mgr.nextID(), cfg.InputURL, cfg)
 	if req.SeedTitle != "" {
 		job.title = req.SeedTitle
 	}
@@ -413,7 +444,13 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	s.mgr.add(job)
 	s.mgr.publishNow(job)
 
-	go s.mgr.run(context.Background(), job, cfg, req.SeedTitles, req.SeedTitle, req.SeedPoster)
+	// Resolve the single shared API client up front; nil when not signed in, in
+	// which case run() fails the job with a clear message. Sharing one client
+	// across discovery and every download run keeps all refresh-token rotations
+	// serialized through its mutex (kino.pub invalidates the old token on each
+	// refresh, so independent clients would lock the account out).
+	apiClient, _ := s.kpClient()
+	go s.mgr.run(context.Background(), job, cfg, req.SeedTitles, req.SeedTitle, req.SeedPoster, apiClient)
 
 	writeJSON(w, http.StatusAccepted, job.snapshot())
 }
@@ -507,6 +544,26 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := deleteLibrarySeries(body.Dir, s.libraryDirs()); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
+}
+
+func (s *Server) handleDeleteLibraryEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Dir string `json:"dir"`
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Dir == "" || body.Key == "" {
+		writeErr(w, http.StatusBadRequest, "dir and key are required")
+		return
+	}
+	if err := deleteLibraryEpisode(body.Dir, body.Key, s.libraryDirs()); err != nil {
 		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}

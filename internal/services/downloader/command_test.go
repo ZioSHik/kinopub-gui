@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func TestToISO6392(t *testing.T) {

@@ -9,10 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/app/kinopub"
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/browsercookies"
-	"github.com/niazlv/kinopub-downloader/internal/lib/credstore"
+	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // defaultUserAgent matches the CLI: Cloudflare's cf_clearance is bound to the
@@ -172,51 +170,19 @@ type RunRequest struct {
 	// EpisodeKeys is an explicit per-episode selection from the series browser,
 	// each formatted "S{season}E{episode}". When present it overrides Seasons /
 	// Episodes so the exact picked set downloads.
-	EpisodeKeys []string          `json:"episodeKeys"`
-	Audio       string            `json:"audio"`
-	AudioMenu   bool              `json:"audioMenu"`
-	Force       bool              `json:"force"`
-	NoChunked   bool              `json:"noChunked"`
-	DryRun      bool              `json:"dryRun"`
-	FFmpegArgs  string            `json:"ffmpegArgs"`
-	FFmpegPath  string            `json:"ffmpegPath"`
-	UserAgent   string            `json:"userAgent"`
-	Cookie      string            `json:"cookie"`
-	Browser     string            `json:"browser"`
-	Headers     map[string]string `json:"headers"`
-	FeedFile    string            `json:"feedFile"`
-	Verbosity   string            `json:"verbosity"`
+	EpisodeKeys []string `json:"episodeKeys"`
+	Audio       string   `json:"audio"`
+	AudioMenu   bool     `json:"audioMenu"`
+	Force       bool     `json:"force"`
+	NoChunked   bool     `json:"noChunked"`
+	DryRun      bool     `json:"dryRun"`
+	FFmpegArgs  string   `json:"ffmpegArgs"`
+	FFmpegPath  string   `json:"ffmpegPath"`
+	UserAgent   string   `json:"userAgent"`
+	Verbosity   string   `json:"verbosity"`
 }
 
-// resolveAuth resolves the cookie + user-agent the same way the CLI does:
-// explicit cookie wins, then a named browser, then stored credentials. The
-// default Safari UA is applied last.
-func resolveAuth(cookie, browser, userAgent string) (string, string, error) {
-	resolved := cookie
-	if resolved == "" && browser != "" {
-		ck, err := browsercookies.Load(browser, "kino.pub")
-		if err != nil {
-			return "", "", err
-		}
-		resolved = ck
-	}
-	if resolved == "" {
-		stored, err := credstore.Load()
-		if err == nil && !stored.IsEmpty() {
-			resolved = stored.Cookie
-			if userAgent == "" && stored.UserAgent != "" {
-				userAgent = stored.UserAgent
-			}
-		}
-	}
-	if userAgent == "" {
-		userAgent = defaultUserAgent
-	}
-	return resolved, userAgent, nil
-}
-
-// buildRunConfig translates a RunRequest into a validated domain.RunConfig,
-// reusing the engine's own parsers so behaviour matches the CLI exactly.
+// buildRunConfig translates a RunRequest into a validated domain.RunConfig.
 func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	cont := domain.ContainerMKV
 	if req.Container == "mp4" {
@@ -248,9 +214,9 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 		return domain.RunConfig{}, err
 	}
 
-	resolvedCookie, ua, err := resolveAuth(req.Cookie, req.Browser, req.UserAgent)
-	if err != nil {
-		return domain.RunConfig{}, err
+	ua := strings.TrimSpace(req.UserAgent)
+	if ua == "" {
+		ua = defaultUserAgent
 	}
 
 	var extraFFmpeg []string
@@ -274,22 +240,12 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 		EpisodeSel:       episodeSel,
 		SelectedEpisodes: selectedEpisodes,
 		DryRun:           req.DryRun,
-		Cookie:           resolvedCookie,
 		UserAgent:        ua,
-		Headers:          req.Headers,
-		FeedFile:         req.FeedFile,
 		FFmpegExtraArgs:  extraFFmpeg,
 		NoChunked:        req.NoChunked,
 		AudioPref:        audioPref,
 		AudioMenu:        req.AudioMenu,
-	}
-
-	// Auto-detect a local feed file passed in the URL field.
-	if cfg.InputURL != "" && cfg.FeedFile == "" {
-		if info, statErr := os.Stat(cfg.InputURL); statErr == nil && !info.IsDir() {
-			cfg.FeedFile = cfg.InputURL
-			cfg.InputURL = ""
-		}
+		UseAPI:           true,
 	}
 
 	kinopub.ApplyDefaults(&cfg)

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // fixedClock returns a Clock that always returns the same time.

@@ -3,19 +3,14 @@ package gui
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"sort"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/fsutil"
-	"github.com/niazlv/kinopub-downloader/internal/lib/httpx"
-	"github.com/niazlv/kinopub-downloader/internal/services/feedparser"
-	"github.com/niazlv/kinopub-downloader/internal/services/inputresolver"
-	"github.com/niazlv/kinopub-downloader/internal/services/pagescraper"
-	"github.com/niazlv/kinopub-downloader/internal/services/proxyprovider"
-	"github.com/niazlv/kinopub-downloader/internal/services/statestore"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
+	"github.com/ZioSHik/kinopub-gui/internal/services/statestore"
 )
 
 // PreviewEpisode is a single row in the series browser.
@@ -50,71 +45,33 @@ type PreviewResponse struct {
 	Logs             []LogEntry      `json:"logs,omitempty"`
 }
 
-// preview resolves the series catalog for the browser/dry-run view. It mirrors
-// the engine's source selection: a page link with auth is scraped via the HLS
-// page playlist, everything else goes through the RSS feed pipeline.
+// preview resolves the series catalog for the browser/dry-run view via the
+// official kino.pub API (an item URL → hls4 playlist).
 func (s *Server) preview(ctx context.Context, req RunRequest) (*PreviewResponse, error) {
 	cfg, err := buildRunConfig(req)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.InputURL == "" {
+		return nil, fmt.Errorf("a kino.pub URL is required")
+	}
 
 	logger, capture := newCaptureLogger(cfg.Verbosity)
 
-	proxyProv, err := proxyprovider.New(cfg.ProxyURL)
+	client, err := s.kpClient()
 	if err != nil {
 		return nil, err
 	}
-	auth := domain.RequestAuth{
-		Cookie:    cfg.Cookie,
-		UserAgent: cfg.UserAgent,
-		Headers:   map[string]string{"Referer": "https://kino.pub/"},
-	}
-	httpClient := httpx.WithAuth(proxyProv.HTTPClient(), auth)
 
 	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
 	defer cancel()
 
-	var (
-		series domain.Series
-		source string
-	)
-
-	switch {
-	case cfg.FeedFile != "":
-		series, err = parseFeed(ctx, httpClient, logger, domain.FeedSource{LocalPath: cfg.FeedFile})
-		source = "rss"
-	default:
-		if cfg.InputURL == "" {
-			return nil, fmt.Errorf("a kino.pub URL or feed file is required")
-		}
-		inputRes := inputresolver.New(logger, inputresolver.WithPageScraper(pagescraper.New(httpClient, logger)))
-		class, cerr := inputRes.Classify(cfg.InputURL)
-		if cerr != nil {
-			return nil, cerr
-		}
-		if class == domain.ClassPageLink && !auth.IsZero() {
-			// Try the HLS page playlist first (richest source for page links).
-			scraper := pagescraper.New(httpClient, logger)
-			if playlist, perr := scraper.ExtractAllSeasons(ctx, cfg.InputURL); perr == nil && len(playlist.Episodes) > 0 {
-				series = seriesFromPlaylist(playlist)
-				source = "hls"
-				break
-			} else if perr != nil {
-				logger.Warn("page scrape failed, falling back to RSS feed", domain.F("error", perr.Error()))
-			}
-		}
-		// RSS fallback / podcast feed.
-		feedSrc, rerr := inputRes.Resolve(ctx, cfg.InputURL)
-		if rerr != nil {
-			return nil, rerr
-		}
-		series, err = parseFeed(ctx, httpClient, logger, feedSrc)
-		source = "rss"
-	}
+	playlist, err := kinopubapi.NewScraper(client, logger).ExtractAllSeasons(ctx, cfg.InputURL)
 	if err != nil {
 		return nil, err
 	}
+	series := seriesFromPlaylist(playlist)
+	source := "api"
 
 	// Load completion state from the series directory.
 	state := loadSeriesState(ctx, cfg.OutputPath, series, logger)
@@ -165,10 +122,6 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-func parseFeed(ctx context.Context, client *http.Client, logger domain.Logger, src domain.FeedSource) (domain.Series, error) {
-	return feedparser.New(client, logger).Parse(ctx, src)
 }
 
 // loadSeriesState points a fresh state store at the series directory and loads

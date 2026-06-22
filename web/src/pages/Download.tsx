@@ -28,7 +28,7 @@ const QUALITIES = [
 ];
 
 export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; onSignIn: () => void }) {
-  const { settings, settingsLoaded, ffmpeg, auth, toast } = useApp();
+  const { settings, settingsLoaded, ffmpeg, kpauth, toast } = useApp();
   const { t } = useI18n();
 
   const [form, setForm] = useState<RunRequest>(() => ({
@@ -50,10 +50,6 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
     ffmpegArgs: "",
     ffmpegPath: "",
     userAgent: "",
-    cookie: "",
-    browser: "",
-    headers: null,
-    feedFile: "",
     verbosity: settings.verbosity,
   }));
 
@@ -120,7 +116,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
   };
 
   const doPreview = async () => {
-    if (!form.url.trim() && !form.feedFile.trim()) {
+    if (!form.url.trim()) {
       toast(t("Enter a kino.pub URL first"), "error");
       return;
     }
@@ -139,7 +135,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
   };
 
   const start = async () => {
-    if (!form.url.trim() && !form.feedFile.trim()) {
+    if (!form.url.trim()) {
       toast(t("Enter a kino.pub URL first"), "error");
       return;
     }
@@ -176,9 +172,9 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <header>
-        <h1 className="text-2xl font-bold text-slate-100">{t("New download")}</h1>
+        <h1 className="text-2xl font-bold text-slate-100">{t("Advanced download")}</h1>
         <p className="mt-1 text-sm text-slate-400">
-          {t("Paste a kino.pub page link, a podcast feed link, or a local feed file.")}
+          {t("Paste a kino.pub link to download it directly. The Catalog is the main way to find titles.")}
         </p>
       </header>
 
@@ -189,13 +185,11 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
         </span>
       </div>
 
-      {!auth.loggedIn && (
+      {!kpauth.loggedIn && (
         <div className="card flex flex-wrap items-center gap-3 border-white/[0.08] p-4 text-sm text-slate-300">
           <KeyRound className="h-4 w-4 shrink-0 text-gold-400" />
           <span className="min-w-0 flex-1">
-            {t(
-              "You're not signed in. Page links (/item/view/…) need kino.pub cookies. Direct podcast feeds, local feed files and the Library work without signing in.",
-            )}
+            {t("Sign in to kino.pub (Settings) to resolve and download titles.")}
           </span>
           <button className="btn-primary px-3 py-2" onClick={onSignIn}>
             {t("Sign in")}
@@ -204,7 +198,7 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
       )}
 
       <div className="card space-y-4 p-5">
-        <Field label={t("kino.pub URL or feed")}>
+        <Field label={t("kino.pub link")}>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Link2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
@@ -303,22 +297,8 @@ export function DownloadPage({ onStarted, onSignIn }: { onStarted: () => void; o
               <Toggle label={t("Verbose logs")} hint={t("Show debug-level log lines")} checked={form.verbosity === "verbose"} onChange={(v) => set("verbosity", v ? "verbose" : "normal")} />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t("Extra ffmpeg args")} hint={t('advanced — e.g. "-c:v libx265 -crf 28"')}>
-                <input className="input font-mono text-xs" value={form.ffmpegArgs} onChange={(e) => set("ffmpegArgs", e.target.value)} />
-              </Field>
-              <Field label={t("Local feed file")} hint={t("path to a saved RSS/XML feed (optional)")}>
-                <input className="input font-mono text-xs" value={form.feedFile} onChange={(e) => set("feedFile", e.target.value)} />
-              </Field>
-            </div>
-
-            <Field label={t("One-off cookie override")} hint={t("Leave empty to use saved credentials")}>
-              <textarea
-                className="input min-h-[60px] font-mono text-xs"
-                placeholder="cf_clearance=...; _identity=..."
-                value={form.cookie}
-                onChange={(e) => set("cookie", e.target.value)}
-              />
+            <Field label={t("Extra ffmpeg args")} hint={t('advanced — e.g. "-c:v libx265 -crf 28"')}>
+              <input className="input font-mono text-xs" value={form.ffmpegArgs} onChange={(e) => set("ffmpegArgs", e.target.value)} />
             </Field>
           </div>
         )}

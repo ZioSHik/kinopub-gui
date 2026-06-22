@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/app/kinopub"
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 )
 
 // Job status values.
@@ -415,7 +416,7 @@ func (m *JobManager) clearFinished() int {
 // run executes a download job end-to-end: it seeds episode metadata (best
 // effort), wires the GUI reporter/chooser/logger, runs the engine, and records
 // the outcome. It is meant to run in its own goroutine.
-func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, titles map[string]string, title, poster string) {
+func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, titles map[string]string, title, poster string, apiClient *kinopubapi.Client) {
 	ctx, cancel := context.WithCancel(parent)
 	// A panic anywhere in the run path must fail just this job, not crash the
 	// whole server (and every other in-flight download).
@@ -451,7 +452,11 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 		chooser = newGUIChooser(m, j)
 	}
 
-	deps, err := buildEngineDeps(cfg, logger, reporter, chooser)
+	if apiClient == nil {
+		m.failJob(j, "not signed in to kino.pub — sign in in Settings to download")
+		return
+	}
+	deps, err := buildEngineDeps(cfg, apiClient, logger, reporter, chooser)
 	if err != nil {
 		m.failJob(j, "setup failed: "+err.Error())
 		return

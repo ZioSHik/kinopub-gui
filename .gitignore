@@ -14,7 +14,8 @@
 /kinopub-gui-linux-amd64
 /kinopub-gui-linux-arm64
 /kinopub-gui-windows-amd64.exe
-# CLI/GUI release archives produced by `make release` / the release workflow.
+/kinopub-gui-android-arm64
+# GUI release archives produced by `make release-gui` / the release workflow.
 /*.tar.gz
 /*.zip
 
@@ -39,3 +40,9 @@ web/.vite/
 
 # Tooling artifacts
 .playwright-mcp/
+
+# macOS app/dmg build output
+dist-app/
+
+# generated Windows resource (icon/version) — produced by `make winsyso` / CI
+cmd/kinopub-gui/*.syso

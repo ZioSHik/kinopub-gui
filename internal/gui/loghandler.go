@@ -1,8 +1,8 @@
 package gui
 
 import (
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/logx"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/logx"
 )
 
 // uiLogHandler is a logx.Handler that forwards engine log records to a job's log

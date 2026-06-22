@@ -9,9 +9,10 @@ import {
 } from "react";
 import {
   api,
-  type AuthStatus,
   type FFmpegStatus,
   type JobView,
+  type KPStatus,
+  type KPUser,
   type Settings,
   type Snapshot,
   type UpdateStatus,
@@ -27,7 +28,8 @@ interface AppContextValue {
   connected: boolean;
   version: string;
   jobs: JobView[];
-  auth: AuthStatus;
+  kpauth: KPStatus;
+  kpUser: KPUser | null;
   ffmpeg: FFmpegStatus;
   settings: Settings;
   settingsLoaded: boolean;
@@ -35,7 +37,7 @@ interface AppContextValue {
   refreshUpdate: (force?: boolean) => Promise<void>;
   ffmpegInstall: { supported: boolean; source?: string };
   setSettingsLocal: (s: Settings) => void;
-  setAuthLocal: (a: AuthStatus) => void;
+  setKpAuthLocal: (a: KPStatus) => void;
   refresh: () => void;
   toasts: Toast[];
   toast: (message: string, kind?: Toast["kind"]) => void;
@@ -44,7 +46,7 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
-const emptyAuth: AuthStatus = { loggedIn: false };
+const emptyKpAuth: KPStatus = { loggedIn: false, pending: false };
 const emptyFFmpeg: FFmpegStatus = { ffmpegFound: false, ffprobeFound: false };
 const emptySettings: Settings = {
   outputPath: "",
@@ -70,7 +72,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
   const [version, setVersion] = useState("");
   const [jobs, setJobs] = useState<JobView[]>([]);
-  const [auth, setAuth] = useState<AuthStatus>(emptyAuth);
+  const [kpauth, setKpAuth] = useState<KPStatus>(emptyKpAuth);
+  const [kpUser, setKpUser] = useState<KPUser | null>(null);
   const [ffmpeg, setFFmpeg] = useState<FFmpegStatus>(emptyFFmpeg);
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -99,7 +102,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const applySnapshot = (snap: Snapshot) => {
     setVersion(snap.version);
     setJobs(sortJobs(snap.jobs || []));
-    setAuth(snap.auth || emptyAuth);
+    setKpAuth(snap.kpauth || emptyKpAuth);
     setFFmpeg(snap.ffmpeg || emptyFFmpeg);
     setSettings(snap.settings || emptySettings);
     setSettingsLoaded(true);
@@ -160,8 +163,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setJobs((cur) => cur.filter((j) => j.id !== id));
             break;
           }
-          case "auth":
-            setAuth(parsed.data as AuthStatus);
+          case "kpauth":
+            setKpAuth(parsed.data as KPStatus);
             break;
           case "ffmpeg":
             setFFmpeg(parsed.data as FFmpegStatus);
@@ -181,12 +184,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Load the account profile (username + subscription) whenever sign-in state
+  // flips to logged-in; clear it on logout. Fed by the SSE kpauth updates.
+  useEffect(() => {
+    if (!kpauth.loggedIn) {
+      setKpUser(null);
+      return;
+    }
+    let alive = true;
+    api
+      .kpUser()
+      .then((u) => alive && setKpUser(u))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [kpauth.loggedIn]);
+
   const value = useMemo<AppContextValue>(
     () => ({
       connected,
       version,
       jobs,
-      auth,
+      kpauth,
+      kpUser,
       ffmpeg,
       settings,
       settingsLoaded,
@@ -194,13 +215,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshUpdate,
       ffmpegInstall,
       setSettingsLocal: setSettings,
-      setAuthLocal: setAuth,
+      setKpAuthLocal: setKpAuth,
       refresh,
       toasts,
       toast,
       dismissToast,
     }),
-    [connected, version, jobs, auth, ffmpeg, settings, settingsLoaded, update, ffmpegInstall, toasts],
+    [connected, version, jobs, kpauth, kpUser, ffmpeg, settings, settingsLoaded, update, ffmpegInstall, toasts],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

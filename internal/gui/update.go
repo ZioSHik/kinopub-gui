@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -240,7 +241,31 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 	if err := replaceExecutable(tmpName, exePath); err != nil {
 		return "", fmt.Errorf("install: %w", err)
 	}
+	resealBundle(exePath)
 	return rel.TagName, nil
+}
+
+// resealBundle re-applies an ad-hoc code signature to the enclosing macOS .app
+// bundle after its executable was replaced in place. The downloaded binary is
+// itself ad-hoc signed by the Go linker (so it runs on Apple Silicon), but the
+// *bundle* signature still hashes the old executable and would no longer verify;
+// re-sealing keeps the bundle consistent. Best-effort: it is a no-op off macOS,
+// when the binary isn't inside a .app, or when codesign is unavailable.
+func resealBundle(exePath string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	macOS := filepath.Dir(exePath)        // …/Contents/MacOS
+	contents := filepath.Dir(macOS)       // …/Contents
+	bundle := filepath.Dir(contents)      // …/Foo.app
+	if filepath.Base(macOS) != "MacOS" || filepath.Base(contents) != "Contents" || !strings.HasSuffix(bundle, ".app") {
+		return
+	}
+	cs, err := exec.LookPath("codesign")
+	if err != nil {
+		return
+	}
+	_ = exec.Command(cs, "--force", "--sign", "-", bundle).Run()
 }
 
 // downloadTo streams src into w (capped at maxBytes) and returns the lowercase

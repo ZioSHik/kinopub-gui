@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // DefaultTimeout is the window the picker waits for input before defaulting to

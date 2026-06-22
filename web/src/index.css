@@ -90,4 +90,43 @@
   .nav-item-active {
     @apply bg-gold-500/[0.12] text-gold-300 hover:bg-gold-500/[0.16] hover:text-gold-200;
   }
+
+  /* In-player slider (seek / volume): gold-filled track up to --val, gold thumb. */
+  .player-range {
+    @apply h-1.5 cursor-pointer appearance-none rounded-full outline-none;
+    background-image: linear-gradient(
+      to right,
+      theme("colors.gold.500") var(--val, 0%),
+      rgba(255, 255, 255, 0.28) var(--val, 0%)
+    );
+  }
+  .player-range::-webkit-slider-thumb {
+    @apply h-3 w-3 cursor-pointer appearance-none rounded-full bg-gold-500 shadow;
+  }
+  .player-range::-moz-range-thumb {
+    @apply h-3 w-3 cursor-pointer rounded-full border-0 bg-gold-500;
+  }
+
+  /* Compact dark select used inside the player overlay. */
+  .player-select {
+    @apply cursor-pointer rounded-md border border-white/20 bg-black/50 px-1.5 py-1 text-xs text-white outline-none;
+  }
+
+  /* Dual-handle range slider: two native range inputs overlaid on one track;
+     only the thumbs receive pointer events so both handles are draggable. */
+  .range-dual {
+    @apply pointer-events-none absolute left-0 top-0 m-0 h-4 w-full appearance-none bg-transparent;
+  }
+  .range-dual::-webkit-slider-runnable-track {
+    @apply h-4 bg-transparent;
+  }
+  .range-dual::-webkit-slider-thumb {
+    @apply pointer-events-auto h-4 w-4 cursor-pointer appearance-none rounded-full border-2 border-ink-950 bg-gold-500 shadow;
+  }
+  .range-dual::-moz-range-track {
+    @apply h-4 bg-transparent;
+  }
+  .range-dual::-moz-range-thumb {
+    @apply pointer-events-auto h-4 w-4 cursor-pointer rounded-full border-2 border-ink-950 bg-gold-500;
+  }
 }

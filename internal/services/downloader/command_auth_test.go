@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func TestBuildFFmpegArgs_InjectsAuthBeforeEachInput(t *testing.T) {

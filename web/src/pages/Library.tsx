@@ -1,16 +1,29 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, Trash2, XCircle } from "lucide-react";
-import { api, type LibraryResponse, type LibrarySeries } from "../api";
+import { CheckCircle2, Clapperboard, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { api, type LibraryEpisode, type LibraryResponse, type LibrarySeries } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
+import { dismiss, pushRoute, replaceRoute, useRoute } from "../router";
 import { bytes, relTime } from "../lib/format";
 import { EmptyState, PosterImage, Spinner } from "../components/ui";
+import { TitleDetail } from "../components/TitleDetail";
 
-function SeriesCard({ s, onDeleted }: { s: LibrarySeries; onDeleted: () => void }) {
+// itemIdOf extracts the kino.pub item id from a library series (its inputUrl or
+// a numeric seriesId), so we can open its catalog card.
+function itemIdOf(s: LibrarySeries): string {
+  const m = (s.inputUrl || "").match(/\/item\/view\/(\d+)/);
+  if (m) return m[1];
+  if (s.seriesId && /^\d+$/.test(s.seriesId)) return s.seriesId;
+  return "";
+}
+
+function SeriesCard({ s, onDeleted, onOpenCard }: { s: LibrarySeries; onDeleted: () => void; onOpenCard: (id: string) => void }) {
   const { t } = useI18n();
-  const { toast } = useApp();
+  const { toast, kpauth } = useApp();
+  const itemId = itemIdOf(s);
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [removingKey, setRemovingKey] = useState<string | null>(null);
   const episodes = s.episodes ?? [];
   const missing = episodes.filter((e) => !e.exists).length;
 
@@ -35,6 +48,23 @@ function SeriesCard({ s, onDeleted }: { s: LibrarySeries; onDeleted: () => void 
       toast(e.message || t("Delete failed"), "error");
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const removeEpisode = async (e: LibraryEpisode) => {
+    const label = `${e.key}${e.title ? ` · ${e.title}` : ""}`;
+    if (!window.confirm(t("Delete episode {label} from disk? This frees its space and cannot be undone.", { label }))) {
+      return;
+    }
+    setRemovingKey(e.key);
+    try {
+      await api.deleteLibraryEpisode(s.dir, e.key);
+      toast(t("Deleted {label}", { label }), "success");
+      onDeleted();
+    } catch (err: any) {
+      toast(err.message || t("Delete failed"), "error");
+    } finally {
+      setRemovingKey(null);
     }
   };
   return (
@@ -68,6 +98,11 @@ function SeriesCard({ s, onDeleted }: { s: LibrarySeries; onDeleted: () => void 
       {open && (
         <div className="border-t border-white/[0.05] bg-black/20 p-3">
           <div className="mb-2 flex justify-end gap-2">
+            {kpauth.loggedIn && itemId && (
+              <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => onOpenCard(itemId)}>
+                <Clapperboard className="h-3.5 w-3.5" /> {t("Open card")}
+              </button>
+            )}
             <button className="btn-ghost px-3 py-1.5 text-xs" onClick={() => openPath(s.dir)}>
               <FolderOpen className="h-3.5 w-3.5" /> {t("Open folder")}
             </button>
@@ -100,6 +135,18 @@ function SeriesCard({ s, onDeleted }: { s: LibrarySeries; onDeleted: () => void 
                     <Play className="h-3.5 w-3.5" />
                   </button>
                 )}
+                <button
+                  className="shrink-0 rounded-md p-1 text-slate-500 opacity-0 transition hover:bg-ember-500/10 hover:text-ember-300 group-hover:opacity-100 disabled:opacity-100"
+                  title={t("Delete this episode from disk")}
+                  onClick={() => removeEpisode(e)}
+                  disabled={removingKey === e.key}
+                >
+                  {removingKey === e.key ? (
+                    <Spinner className="h-3.5 w-3.5" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                </button>
               </div>
             ))}
           </div>
@@ -114,6 +161,9 @@ export function LibraryPage() {
   const { t } = useI18n();
   const [data, setData] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // The open card lives in the URL hash ("#/library/i/<id>") so it survives a
+  // reload and browser back closes it.
+  const cardId = useRoute().itemId ?? null;
 
   const load = () => {
     setLoading(true);
@@ -153,9 +203,23 @@ export function LibraryPage() {
       ) : (
         <div className="space-y-4">
           {series.map((s) => (
-            <SeriesCard key={s.stateFile} s={s} onDeleted={load} />
+            <SeriesCard
+              key={s.stateFile}
+              s={s}
+              onDeleted={load}
+              onOpenCard={(id) => pushRoute({ page: "library", itemId: id })}
+            />
           ))}
         </div>
+      )}
+
+      {cardId && (
+        <TitleDetail
+          id={cardId}
+          onClose={() => dismiss({ page: "library" })}
+          onPick={(it) => replaceRoute({ page: "library", itemId: it.id })}
+          onStarted={() => dismiss({ page: "library" })}
+        />
       )}
     </div>
   );

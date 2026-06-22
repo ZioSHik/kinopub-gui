@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 
 	"pgregory.net/rapid"
 )

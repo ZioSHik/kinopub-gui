@@ -48,24 +48,6 @@ type Runner interface {
 }
 
 // ---------------------------------------------------------------------------
-// FeedSource — normalized feed reference
-// ---------------------------------------------------------------------------
-
-// FeedSource represents a normalized podcast feed reference with its numeric
-// ID and authentication token.
-type FeedSource struct {
-	ID    string // numeric podcast id from the URL
-	Token string // feed authentication token
-
-	// LocalPath, when non-empty, points to a locally saved RSS feed file that
-	// should be read instead of fetching the feed over the network.
-	LocalPath string
-}
-
-// QualityPref is an alias for Quality used in media resolution preference.
-type QualityPref = Quality
-
-// ---------------------------------------------------------------------------
 // Component interfaces (ports)
 // ---------------------------------------------------------------------------
 
@@ -82,46 +64,6 @@ type Logger interface {
 
 	// Component returns a child logger tagged with a component name (Req 13.5).
 	Component(name string) Logger
-}
-
-// InputClass distinguishes the type of user-supplied URL.
-type InputClass int
-
-const (
-	ClassUnclassified InputClass = iota
-	ClassPodcastFeed
-	ClassPageLink
-)
-
-// InputResolver classifies and resolves user-supplied URLs into feed sources
-// (Req 1).
-type InputResolver interface {
-	// Classify inspects a kino.pub URL (Req 1.1).
-	Classify(rawURL string) (InputClass, error)
-
-	// Resolve produces a FeedSource. For a page link it derives the tokenized
-	// feed (Req 1.2, 1.3); it returns ErrFeedTokenUnavailable when the feed
-	// token cannot be obtained (Req 1.6).
-	Resolve(ctx context.Context, rawURL string) (FeedSource, error)
-}
-
-// FeedParser retrieves and parses an RSS feed into a Series catalog (Req 2).
-type FeedParser interface {
-	// Parse retrieves (within a 30s timeout) and parses the feed into a Series
-	// (Req 2.1, 2.2). Entries whose season/episode cannot be determined are
-	// excluded with a warn log (Req 2.8). Returns ErrEmptyFeed when zero
-	// episodes parse (Req 2.6), and descriptive errors for retrieval/parse
-	// failures (Req 2.5, 2.7).
-	Parse(ctx context.Context, src FeedSource) (Series, error)
-}
-
-// MediaResolver enumerates tracks for an episode (Req 3).
-type MediaResolver interface {
-	// Resolve enumerates tracks for an episode within a 30s timeout (Req 3.8).
-	// Selects the MediaSource by quality preference, else highest quality
-	// (Req 3.6, 3.7). Returns ErrNoVideoTrack if no video track resolves
-	// (Req 3.5).
-	Resolve(ctx context.Context, ep Episode, pref QualityPref) (ResolvedMedia, error)
 }
 
 // Scheduler executes download jobs with bounded concurrency, rate limiting,

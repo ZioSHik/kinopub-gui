@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func TestIsTransientDownloadError(t *testing.T) {
@@ -107,22 +108,37 @@ func TestEarliestDeferredIndex(t *testing.T) {
 	}
 }
 
-// recordingReporter captures the deferred-retry lifecycle for assertions.
+// recordingReporter captures the deferred-retry lifecycle for assertions. Its
+// mutex guards the slices against concurrent appends now that episodes download
+// in parallel (the production reporter is likewise internally synchronized).
 type recordingReporter struct {
+	mu        sync.Mutex
 	started   []domain.EpisodeKey
 	completed []domain.EpisodeKey
 	failed    []domain.EpisodeKey
 	deferred  []domain.EpisodeKey
 }
 
-func (r *recordingReporter) Start(domain.SeriesPlan)                 {}
-func (r *recordingReporter) EpisodeStarted(k domain.EpisodeKey)      { r.started = append(r.started, k) }
+func (r *recordingReporter) Start(domain.SeriesPlan) {}
+func (r *recordingReporter) EpisodeStarted(k domain.EpisodeKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.started = append(r.started, k)
+}
 func (r *recordingReporter) TrackProgress(domain.EpisodeKey, domain.TrackRef, int) {}
-func (r *recordingReporter) EpisodeCompleted(k domain.EpisodeKey)    { r.completed = append(r.completed, k) }
+func (r *recordingReporter) EpisodeCompleted(k domain.EpisodeKey) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.completed = append(r.completed, k)
+}
 func (r *recordingReporter) EpisodeFailed(k domain.EpisodeKey, _ error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.failed = append(r.failed, k)
 }
 func (r *recordingReporter) EpisodeDeferred(k domain.EpisodeKey, _ error, _ int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.deferred = append(r.deferred, k)
 }
 func (r *recordingReporter) Stop() {}

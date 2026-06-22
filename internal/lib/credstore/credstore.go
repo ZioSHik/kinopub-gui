@@ -27,19 +27,50 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"golang.org/x/crypto/pbkdf2"
 )
+
+// rmwMu serializes read-modify-write cycles on the single encrypted credential
+// file, so concurrent callers (a background token refresh, a logout, a settings
+// save) cannot clobber each other's changes by interleaving Load → modify → Save.
+var rmwMu sync.Mutex
+
+// Update atomically applies fn to the stored credentials under rmwMu: it loads
+// the current credentials (treating a missing/zero file as empty), lets fn mutate
+// them, and persists the result. It is the safe way to change a subset of fields
+// without racing other writers of the same file.
+func Update(fn func(*Credentials)) error {
+	rmwMu.Lock()
+	defer rmwMu.Unlock()
+	creds, _ := Load()
+	fn(&creds)
+	return Save(creds)
+}
 
 // Credentials holds the authentication data persisted between runs.
 type Credentials struct {
 	Cookie    string `json:"cookie"`
 	UserAgent string `json:"user_agent"`
+
+	// Official kino.pub API (device-code OAuth) token set. Stored alongside the
+	// cookie so both auth paths share one encrypted file. APIExpiry is unix
+	// seconds; zero means unknown.
+	APIAccessToken  string `json:"api_access_token,omitempty"`
+	APIRefreshToken string `json:"api_refresh_token,omitempty"`
+	APIExpiry       int64  `json:"api_expiry,omitempty"`
 }
 
-// IsEmpty reports whether the credentials carry no useful data.
+// IsEmpty reports whether the cookie-based credentials carry no useful data.
+// (API tokens are tracked separately via HasAPIToken.)
 func (c Credentials) IsEmpty() bool {
 	return c.Cookie == "" && c.UserAgent == ""
+}
+
+// HasAPIToken reports whether an official-API token set is stored.
+func (c Credentials) HasAPIToken() bool {
+	return c.APIAccessToken != "" || c.APIRefreshToken != ""
 }
 
 // credDir returns the directory where the credential file is stored. It honors

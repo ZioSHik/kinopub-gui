@@ -135,7 +135,13 @@ export function JobCard({ job }: { job: JobView }) {
   const [busy, setBusy] = useState(false);
 
   const finished = ["completed", "failed", "canceled"].includes(job.status);
-  const totalEps = job.episodes.length;
+  // The engine plans the full selection up front (job.plan.total) but only adds
+  // episode rows to the view as each one starts (concurrency-limited). Use the
+  // plan total as the denominator so a multi-episode selection reads "0/2", not
+  // "0/1", while the rest are still pending. Fall back to the visible rows only
+  // before the plan resolves.
+  const visibleEps = job.episodes.length;
+  const totalEps = job.plan && job.plan.total > 0 ? job.plan.total : visibleEps;
   const doneEps = job.episodes.filter((e) => e.state === "completed").length;
   const runningPartial = job.episodes
     .filter((e) => e.state === "running")

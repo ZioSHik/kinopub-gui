@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/gui"
-	"github.com/niazlv/kinopub-downloader/internal/lib/termx"
-	"github.com/niazlv/kinopub-downloader/web"
+	"github.com/ZioSHik/kinopub-gui/internal/gui"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/termx"
+	"github.com/ZioSHik/kinopub-gui/web"
 )
 
 var version = "dev"
@@ -95,10 +95,19 @@ func run() int {
 		}()
 	}
 
-	// Graceful shutdown on Ctrl-C.
+	// Block until the server stops. On macOS (inside a .app) runApp runs a tiny
+	// Cocoa application so there's a real Dock icon and ⌘Q; elsewhere it just
+	// waits on the server, a self-update restart, or an interrupt signal.
+	return runApp(httpSrv, ln, errCh, restartCh)
+}
+
+// runHeadless blocks until the server stops — a fatal serve error, a self-update
+// restart, or an interrupt (Ctrl-C / SIGTERM) — and returns a process exit code.
+// It is the whole lifecycle for CLI/headless runs and on platforms without a
+// native app shell.
+func runHeadless(srv *http.Server, ln net.Listener, errCh <-chan error, restartCh <-chan struct{}) int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
@@ -106,24 +115,38 @@ func run() int {
 			return 1
 		}
 	case <-restartCh:
-		fmt.Fprintln(os.Stderr, "\nkinopub-gui: update installed — restarting…")
-		boundAddr := ln.Addr().String()
-		_ = ln.Close() // release the port for the new process
-		exe, err := os.Executable()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "kinopub-gui: cannot locate executable: %v\n", err)
-			return 1
-		}
-		if err := reexec(exe, []string{"-addr", boundAddr, "-no-open"}); err != nil {
-			fmt.Fprintf(os.Stderr, "kinopub-gui: restart failed (please relaunch manually): %v\n", err)
-			return 1
-		}
-		return 0
+		return performRestart(ln)
 	case <-sigCh:
 		fmt.Fprintln(os.Stderr, "\nkinopub-gui: shutting down…")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = httpSrv.Shutdown(ctx)
+		gracefulShutdown(srv)
+	}
+	return 0
+}
+
+// gracefulShutdown asks the server to stop, giving in-flight requests a few
+// seconds to finish.
+func gracefulShutdown(srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
+// performRestart re-execs the freshly installed binary on the same address (with
+// -no-open) so the open browser tab simply reconnects over SSE. It returns a
+// process exit code; on Unix a successful re-exec replaces the image and does
+// not return.
+func performRestart(ln net.Listener) int {
+	fmt.Fprintln(os.Stderr, "\nkinopub-gui: update installed — restarting…")
+	boundAddr := ln.Addr().String()
+	_ = ln.Close() // release the port for the new process
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kinopub-gui: cannot locate executable: %v\n", err)
+		return 1
+	}
+	if err := reexec(exe, []string{"-addr", boundAddr, "-no-open"}); err != nil {
+		fmt.Fprintf(os.Stderr, "kinopub-gui: restart failed (please relaunch manually): %v\n", err)
+		return 1
 	}
 	return 0
 }

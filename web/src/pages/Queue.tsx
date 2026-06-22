@@ -1,4 +1,4 @@
-import { Inbox, Trash2 } from "lucide-react";
+import { Inbox, Link2, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
@@ -30,11 +30,16 @@ export function QueuePage({ onNew }: { onNew: () => void }) {
             {t("{n} active · {m} finished", { n: active.length, m: finished.length })}
           </p>
         </div>
-        {finished.length > 0 && (
-          <button className="btn-ghost" onClick={clear}>
-            <Trash2 className="h-4 w-4" /> {t("Clear finished")}
+        <div className="flex items-center gap-2">
+          <button className="btn-ghost" onClick={onNew} title={t("Download by a kino.pub link")}>
+            <Link2 className="h-4 w-4" /> {t("Advanced download")}
           </button>
-        )}
+          {finished.length > 0 && (
+            <button className="btn-ghost" onClick={clear}>
+              <Trash2 className="h-4 w-4" /> {t("Clear finished")}
+            </button>
+          )}
+        </div>
       </header>
 
       {jobs.length === 0 ? (
@@ -44,7 +49,7 @@ export function QueuePage({ onNew }: { onNew: () => void }) {
           hint={t("Start a download and live progress for every episode shows up here.")}
           action={
             <button className="btn-primary" onClick={onNew}>
-              {t("New download ")}
+              <Link2 className="h-4 w-4" /> {t("Advanced download")}
             </button>
           }
         />

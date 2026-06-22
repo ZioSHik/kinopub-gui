@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func TestParseOutTime(t *testing.T) {

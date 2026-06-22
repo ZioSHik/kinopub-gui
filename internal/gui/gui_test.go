@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 func TestIsLoopbackHost(t *testing.T) {
@@ -71,48 +71,6 @@ func TestIsPublicIP(t *testing.T) {
 			t.Errorf("isPublicIP(%q) = %v, want %v", ipStr, got, want)
 		}
 	}
-}
-
-func TestResolveAuth(t *testing.T) {
-	// Redirect credstore storage to an empty temp dir so the stored-credential
-	// fallback finds nothing and we exercise the deterministic branches.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
-	t.Run("explicit cookie wins, default UA applied", func(t *testing.T) {
-		cookie, ua, err := resolveAuth("cf_clearance=abc", "", "")
-		if err != nil {
-			t.Fatalf("resolveAuth: %v", err)
-		}
-		if cookie != "cf_clearance=abc" {
-			t.Errorf("cookie = %q, want explicit value", cookie)
-		}
-		if ua != defaultUserAgent {
-			t.Errorf("ua = %q, want default", ua)
-		}
-	})
-
-	t.Run("explicit user-agent preserved", func(t *testing.T) {
-		_, ua, err := resolveAuth("c", "", "MyUA/1.0")
-		if err != nil {
-			t.Fatalf("resolveAuth: %v", err)
-		}
-		if ua != "MyUA/1.0" {
-			t.Errorf("ua = %q, want MyUA/1.0", ua)
-		}
-	})
-
-	t.Run("no credentials → empty cookie, default UA", func(t *testing.T) {
-		cookie, ua, err := resolveAuth("", "", "")
-		if err != nil {
-			t.Fatalf("resolveAuth: %v", err)
-		}
-		if cookie != "" {
-			t.Errorf("cookie = %q, want empty", cookie)
-		}
-		if ua != defaultUserAgent {
-			t.Errorf("ua = %q, want default", ua)
-		}
-	})
 }
 
 func TestParseEpisodeKeys(t *testing.T) {

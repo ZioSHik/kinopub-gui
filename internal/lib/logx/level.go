@@ -3,7 +3,7 @@
 // file logging at all levels, and verbosity filtering.
 package logx
 
-import "github.com/niazlv/kinopub-downloader/internal/domain"
+import "github.com/ZioSHik/kinopub-gui/internal/domain"
 
 // Re-export domain levels for convenience within the package.
 const (

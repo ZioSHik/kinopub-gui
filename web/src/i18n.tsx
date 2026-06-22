@@ -17,6 +17,10 @@ const RU: Record<string, string> = {
   "Reconnecting…": "Переподключение…",
   "Signed in": "Вы вошли",
   "Sign in": "Войти",
+  "Expand sidebar": "Развернуть панель",
+  "Collapse sidebar": "Свернуть панель",
+  "{n} days left": "осталось {n} дн.",
+  "No subscription": "Нет подписки",
   "ffmpeg ready": "ffmpeg готов",
   "ffmpeg missing": "ffmpeg не найден",
   connected: "подключено",
@@ -27,29 +31,17 @@ const RU: Record<string, string> = {
   "Sign in to kino.pub to continue": "Войдите в kino.pub, чтобы продолжить",
   "kino.pub authentication": "Авторизация kino.pub",
   Logout: "Выйти",
-  "Cookie {preview} · {n} keys": "Cookie {preview} · ключей: {n}",
-  "Why this is needed": "Зачем это нужно",
-  "kino.pub sits behind Cloudflare. Paste the Cookie header from a logged-in browser session (DevTools → Network → request headers), or auto-import it from a browser below. The User-Agent must match the browser that issued the cookies.":
-    "kino.pub за Cloudflare. Вставьте заголовок Cookie из залогиненной сессии браузера (DevTools → Network → заголовки запроса) или импортируйте из браузера ниже. User-Agent должен совпадать с браузером, выдавшим куки.",
-  "Cookie header": "Заголовок Cookie",
-  "e.g. cf_clearance=…; _identity=…; PHPSESSID=…": "напр. cf_clearance=…; _identity=…; PHPSESSID=…",
-  "User-Agent": "User-Agent",
-  "Pre-filled with this browser's UA. It must match the browser the cookies came from — for browser import, open this app in that same browser.":
-    "Подставлен UA текущего браузера. Он должен совпадать с браузером, откуда куки — для импорта открывайте приложение в том же браузере.",
-  "Save cookie": "Сохранить cookie",
-  "Or import from a browser": "Или импорт из браузера",
-  "Tip: open this app in the same browser you import from — the User-Agent above then matches the imported cf_clearance, which Cloudflare requires. On macOS, allow Keychain access when prompted (Yandex/Chrome) or grant Full Disk Access (Safari).":
-    "Совет: открывайте приложение в том же браузере, откуда импортируете — тогда User-Agent совпадёт с импортированным cf_clearance, который требует Cloudflare. На macOS разрешите доступ к Keychain (Yandex/Chrome) или дайте Full Disk Access (Safari).",
   "Credentials saved": "Данные сохранены",
   "Login failed": "Не удалось войти",
   "Logged out": "Вы вышли",
   "Logout failed": "Не удалось выйти",
 
-  // Download page
-  "New download": "Новая загрузка",
-  "Paste a kino.pub page link, a podcast feed link, or a local feed file.":
-    "Вставьте ссылку на страницу kino.pub, на podcast-feed или локальный feed-файл.",
-  "kino.pub URL or feed": "Ссылка kino.pub или feed",
+  // Download page (advanced — reached from the Queue; Catalog is the main flow)
+  "Advanced download": "Продвинутая загрузка",
+  "Download by a kino.pub link": "Загрузка по ссылке kino.pub",
+  "Paste a kino.pub link to download it directly. The Catalog is the main way to find titles.":
+    "Вставьте ссылку kino.pub, чтобы скачать напрямую. Основной способ искать тайтлы — Каталог.",
+  "kino.pub link": "Ссылка kino.pub",
   Preview: "Предпросмотр",
   Quality: "Качество",
   "Auto (highest)": "Авто (макс.)",
@@ -82,9 +74,6 @@ const RU: Record<string, string> = {
   "Show debug-level log lines": "Показывать debug-логи",
   "Extra ffmpeg args": "Доп. аргументы ffmpeg",
   'advanced — e.g. "-c:v libx265 -crf 28"': 'продвинутое — напр. "-c:v libx265 -crf 28"',
-  "Local feed file": "Локальный feed-файл",
-  "path to a saved RSS/XML feed (optional)": "путь к сохранённому RSS/XML (необязательно)",
-  "One-off cookie override": "Разовое переопределение cookie",
   "Leave empty to use saved credentials": "Пусто — использовать сохранённые данные",
   "Start download": "Начать загрузку",
   "ffmpeg not detected — required to download": "ffmpeg не найден — нужен для загрузки",
@@ -119,7 +108,6 @@ const RU: Record<string, string> = {
   "No downloads yet": "Пока нет загрузок",
   "Start a download and live progress for every episode shows up here.":
     "Запустите загрузку — живой прогресс по каждому эпизоду появится здесь.",
-  "New download ": "Новая загрузка",
   Finished: "Завершённые",
   "Cleared {n} finished jobs": "Очищено завершённых: {n}",
 
@@ -157,13 +145,10 @@ const RU: Record<string, string> = {
   "Remove broken entries & files": "Удалить битые записи и файлы",
   "Clean .tmp": "Очистить .tmp",
   "Delete orphan temp files": "Удалить осиротевшие temp-файлы",
-  "Skip probe": "Без сверки длительности",
-  "Faster, no network": "Быстрее, без сети",
   "Run doctor": "Запустить доктор",
   "In state": "В state",
   Healthy: "Целых",
   Issues: "Проблемы",
-  Skipped: "Пропущено",
   "Series:": "Сериал:",
   "All files are consistent with the state file.": "Все файлы соответствуют state-файлу.",
   "State repaired — run the download again to re-fetch affected episodes.":
@@ -177,7 +162,6 @@ const RU: Record<string, string> = {
   "Size mismatch": "Размер не совпал",
   "Incomplete record": "Неполная запись",
   "Orphan .tmp": "Осиротевший .tmp",
-  "Duration mismatch": "Длительность не совпала",
 
   // Settings
   "Defaults applied to every new download.": "Значения по умолчанию для новых загрузок.",
@@ -236,6 +220,10 @@ const RU: Record<string, string> = {
   "Deleted “{title}”": "Удалено «{title}»",
   "Delete “{title}” and all its files from disk? This cannot be undone.":
     "Удалить «{title}» и все его файлы с диска? Это нельзя отменить.",
+  "Delete this episode from disk": "Удалить эту серию с диска",
+  "Deleted {label}": "Удалено {label}",
+  "Delete episode {label} from disk? This frees its space and cannot be undone.":
+    "Удалить серию {label} с диска? Это освободит место и необратимо.",
 
   // Dir picker
   "Choose a folder": "Выбор папки",
@@ -260,10 +248,6 @@ const RU: Record<string, string> = {
   "{m}m": "{m} м",
   ETA: "Осталось",
 
-  // Sign-in hint (Download page)
-  "You're not signed in. Page links (/item/view/…) need kino.pub cookies. Direct podcast feeds, local feed files and the Library work without signing in.":
-    "Вы не вошли. Ссылки на страницы (/item/view/…) требуют куки kino.pub. Прямые podcast-feed, локальные feed-файлы и Библиотека работают без входа.",
-
   // Library file actions
   Open: "Открыть",
   "Open folder": "Открыть папку",
@@ -271,6 +255,111 @@ const RU: Record<string, string> = {
   "Opening…": "Открываю…",
   "Could not open": "Не удалось открыть",
   "File not found": "Файл не найден",
+
+  // kino.pub API login (Settings)
+  "kino.pub account (API)": "Аккаунт kino.pub (API)",
+  "Sign in once with a device code to search the catalog, preview voiceovers, and download titles.":
+    "Войдите один раз по коду устройства — поиск по каталогу, выбор озвучки и загрузка.",
+  "Signed in to kino.pub": "Вы вошли в kino.pub",
+  "Open the link and enter this code:": "Откройте ссылку и введите код:",
+  "Waiting for confirmation…": "Ожидание подтверждения…",
+  "Sign in to kino.pub": "Войти в kino.pub",
+  "Enter the code on kino.pub/device to finish signing in":
+    "Введите код на kino.pub/device, чтобы завершить вход",
+
+  // Catalog (Discover)
+  Catalog: "Каталог",
+  "Search kino.pub, browse tops and collections, preview voiceovers — and download in one click.":
+    "Ищите на kino.pub, смотрите топы и подборки, оценивайте озвучки — и качайте в один клик.",
+  "Search films and series on kino.pub…": "Поиск фильмов и сериалов на kino.pub…",
+  Popular: "Популярное",
+  Hot: "Горячее",
+  Fresh: "Новое",
+  Collections: "Подборки",
+  Search: "Поиск",
+  All: "Все",
+  Movies: "Фильмы",
+  Series: "Сериалы",
+  "Nothing found.": "Ничего не найдено.",
+  "Load more": "Показать ещё",
+  "Catalog request failed": "Не удалось загрузить каталог",
+  "Sign in to kino.pub to browse the catalog": "Войдите в kino.pub, чтобы открыть каталог",
+  "The catalog, search, voiceovers and one-click downloads use the official kino.pub API. Sign in once in Settings.":
+    "Каталог, поиск, озвучки и загрузка в один клик работают через официальное API kino.pub. Войдите один раз в Настройках.",
+  "Go to Settings": "Перейти в Настройки",
+
+  // Title detail
+  "Loading…": "Загрузка…",
+  Title: "Тайтл",
+  min: "мин",
+  Voiceover: "Озвучка",
+  "(all tracks)": "(все дорожки)",
+  "({n} selected)": "(выбрано: {n})",
+  "Voiceover list appears after sign-in / for available titles.":
+    "Список озвучек появляется после входа / для доступных тайтлов.",
+  "Download ({n})": "Скачать ({n})",
+  "Select at least one episode": "Выберите хотя бы один эпизод",
+  Similar: "Похожее",
+
+  // Catalog v2 — tabs, filter, collections, history
+  "Search kino.pub, browse tops, collections and history, preview voiceovers — and download in one click.":
+    "Ищите на kino.pub, смотрите топы, подборки и историю, оценивайте озвучки — и качайте в один клик.",
+  Browse: "Обзор",
+  History: "История",
+  "I'm watching": "Я смотрю",
+  Bookmarks: "Закладки",
+  "{n} titles": "{n} тайтлов",
+  Clear: "Очистить",
+  New: "Новые",
+  "Most watched": "Просматриваемые",
+  Categories: "Категории",
+  Subscriptions: "Подписки",
+  Filter: "Фильтр",
+  Type: "Тип",
+  Genre: "Жанр",
+  Country: "Страна",
+  Sort: "Сортировка",
+  Any: "Любой",
+  "4K": "4K",
+  Concerts: "Концерты",
+  Documentary: "Документальное",
+  "TV shows": "ТВ-шоу",
+  "By update": "По обновлению",
+  "KP rating": "Рейтинг КП",
+  "IMDb rating": "Рейтинг IMDb",
+  Year: "Год",
+  "Release year": "Год выхода",
+  "Kinopoisk rating": "Рейтинг Кинопоиска",
+  "AC3 sound": "Звук AC3",
+  "With subtitles": "С субтитрами",
+  "Reset filters": "Сбросить фильтры",
+  Director: "Режиссёр",
+  Cast: "В ролях",
+  "Open card": "Открыть карточку",
+  "Season {s}. Episode {e}": "Сезон {s}. Эпизод {e}",
+  Watched: "Просмотрено",
+
+  // Player
+  Watch: "Смотреть",
+  Player: "Плеер",
+  Close: "Закрыть",
+  "Your browser can’t play HLS video.": "Ваш браузер не умеет воспроизводить HLS-видео.",
+  "Failed to load stream": "Не удалось загрузить поток",
+  "Playback error — try reopening.": "Ошибка воспроизведения — откройте заново.",
+  "Previous episode": "Предыдущая серия",
+  "Next episode": "Следующая серия",
+  "Back {n}s": "Назад {n} с",
+  "Forward {n}s": "Вперёд {n} с",
+  "Audio track": "Аудиодорожка",
+  Auto: "Авто",
+  Play: "Воспроизвести",
+  Pause: "Пауза",
+  Mute: "Без звука",
+  Unmute: "Включить звук",
+  Seek: "Перемотка",
+  Volume: "Громкость",
+  Fullscreen: "На весь экран",
+  "Exit fullscreen": "Выйти из полноэкранного",
 };
 
 interface I18nValue {

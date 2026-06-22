@@ -36,9 +36,7 @@ jobs:
         run: go vet ./...
 
       - name: Build binaries
-        run: |
-          go build ./cmd/kinopub
-          go build ./cmd/kinopub-gui
+        run: go build ./...
 
       # Runs on every OS so platform-specific paths (notably the Windows
       # credstore machine-seed) are actually exercised, not just cross-compiled.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // ValidateConfig validates all config fields and returns ErrInvalidFlag with a

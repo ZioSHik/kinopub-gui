@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
-	"github.com/niazlv/kinopub-downloader/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 )
 
 // engine orchestrates the download workflow using injected dependencies.
@@ -45,397 +45,14 @@ const consecutiveFailLimit = 3
 // Each worker does lazy resolution immediately before downloading so CDN links
 // stay fresh. MaxConcurrency controls the parallelism (default 2).
 func (e *engine) run(ctx context.Context, cfg domain.RunConfig) (domain.RunResult, error) {
-	log := e.deps.Logger.Component("engine")
-
-	// Try HLS pipeline first if available and input is a page link.
-	if e.deps.HLSDownloader != nil && e.deps.PageScraper != nil && cfg.InputURL != "" && !cfg.NoChunked {
-		result, err := e.runHLS(ctx, cfg)
-		if err == nil {
-			return result, nil
-		}
-		log.Warn("HLS pipeline failed, falling back to RSS pipeline",
-			domain.F("error", err.Error()),
-		)
+	if e.deps.HLSDownloader == nil || e.deps.PageScraper == nil {
+		return domain.RunResult{}, fmt.Errorf("downloader not configured")
 	}
-
-	return e.runRSS(ctx, cfg)
+	if cfg.InputURL == "" {
+		return domain.RunResult{}, fmt.Errorf("a kino.pub URL is required")
+	}
+	return e.runHLS(ctx, cfg)
 }
-
-// runRSS is the original RSS-based download pipeline.
-func (e *engine) runRSS(ctx context.Context, cfg domain.RunConfig) (domain.RunResult, error) {
-	log := e.deps.Logger.Component("engine")
-
-	// 1. Resolve input → FeedSource.
-	var feedSrc domain.FeedSource
-	if cfg.FeedFile != "" {
-		log.Info("using local feed file", domain.F("path", cfg.FeedFile))
-		feedSrc = domain.FeedSource{LocalPath: cfg.FeedFile}
-		if cfg.InputURL != "" {
-			if resolved, rerr := e.deps.InputResolver.Resolve(ctx, cfg.InputURL); rerr == nil {
-				feedSrc.ID = resolved.ID
-				feedSrc.Token = resolved.Token
-			}
-		}
-	} else {
-		log.Info("resolving input URL", domain.F("url", cfg.InputURL))
-		resolved, err := e.deps.InputResolver.Resolve(ctx, cfg.InputURL)
-		if err != nil {
-			return domain.RunResult{}, err
-		}
-		feedSrc = resolved
-	}
-
-	// 2. Parse feed → Series
-	log.Info("parsing feed", domain.F("feed_id", feedSrc.ID))
-	series, err := e.deps.FeedParser.Parse(ctx, feedSrc)
-	if err != nil {
-		return domain.RunResult{}, err
-	}
-
-	// 2b. Now that we know the series title, point the state store at the
-	// series download directory so the state file lives alongside the media.
-	seriesDir := e.seriesDirPath(cfg.OutputPath, series)
-	if ss, ok := e.deps.StateStore.(interface{ SetSeriesDir(string) }); ok {
-		ss.SetSeriesDir(seriesDir)
-	}
-
-	// 3. Load state for the series
-	state, err := e.deps.StateStore.Load(ctx, series.ID)
-	if err != nil {
-		return domain.RunResult{}, err
-	}
-
-	// 4. Filter episodes by SeasonSel/EpisodeSel, skip completed
-	allMatching := e.matchingEpisodes(series, cfg)
-	selected := e.filterCompleted(allMatching, state, cfg)
-	if len(selected) == 0 {
-		log.Info("no episodes to download")
-		return domain.RunResult{Total: 0}, nil
-	}
-
-	alreadyCompleted := len(allMatching) - len(selected)
-	log.Info("episodes selected for download",
-		domain.F("count", len(selected)),
-		domain.F("already_completed", alreadyCompleted),
-		domain.F("concurrency", cfg.MaxConcurrency),
-	)
-
-	// 5. DryRun: just list what would be downloaded.
-	if cfg.DryRun {
-		log.Info("dry run — listing episodes without downloading")
-		for _, ep := range selected {
-			log.Info(fmt.Sprintf("  S%02dE%02d %s", ep.Key.Season, ep.Key.Episode, ep.Title))
-		}
-		return domain.RunResult{Total: len(selected)}, nil
-	}
-
-	// 5b. Persist series-level metadata for provenance/recovery.
-	feedURL := cfg.InputURL
-	if cfg.FeedFile != "" {
-		feedURL = cfg.FeedFile
-	}
-	seriesMeta := domain.SeriesMetadata{
-		Title:         series.Title,
-		OriginalTitle: series.OriginalTitle,
-		Description:   series.Description,
-		PosterURL:     series.PosterURL,
-		FeedURL:       feedURL,
-		InputURL:      cfg.InputURL,
-		UpdatedAt:     time.Now(),
-	}
-	if err := e.deps.StateStore.SetMetadata(ctx, series.ID, seriesMeta); err != nil {
-		log.Warn("failed to persist series metadata", domain.F("error", err.Error()))
-	}
-
-	// 6. Download series poster for embedding as cover art.
-	var posterPath string
-	if series.PosterURL != "" {
-		p, err := e.downloadPoster(ctx, series.PosterURL, seriesDir)
-		if err != nil {
-			log.Debug("poster download failed, skipping cover art embedding",
-				domain.F("error", err.Error()))
-		} else {
-			posterPath = p
-			defer os.Remove(posterPath)
-		}
-	}
-
-	// 7. Start progress reporting.
-	plan := domain.SeriesPlan{
-		Title:              series.Title,
-		PosterURL:          series.PosterURL,
-		Total:              len(allMatching),
-		Seasons:            countSeasons(allMatching),
-		AlreadyCompleted:   alreadyCompleted,
-		CompletedPerSeason: countCompletedPerSeason(allMatching, state, e.deps.StateStore),
-	}
-	e.deps.ProgressReporter.Start(plan)
-	defer e.deps.ProgressReporter.Stop()
-
-	// 8. Parallel download with worker pool.
-	// Each worker picks an episode from the channel, resolves media, downloads.
-	concurrency := cfg.MaxConcurrency
-	if concurrency < 1 {
-		concurrency = 2
-	}
-	if concurrency > len(selected) {
-		concurrency = len(selected)
-	}
-
-	// Channel to dispatch episodes to workers.
-	jobCh := make(chan domain.Episode, concurrency)
-
-	// Collect outcomes thread-safely.
-	var mu sync.Mutex
-	var (
-		succeeded        int
-		failed           int
-		skipped          int
-		consecutiveFails int
-		stopDispatch     bool
-		outcomes         []domain.JobOutcome
-	)
-
-	// Worker function.
-	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// A panic during media resolution or download must fail only the
-			// current episode, not crash the whole process (and every concurrent
-			// download with it).
-			var current *domain.EpisodeKey
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("download worker panicked; recovering",
-						domain.F("panic", fmt.Sprintf("%v", r)))
-					if current != nil {
-						mu.Lock()
-						outcomes = append(outcomes, domain.JobOutcome{
-							Key: *current, Succeeded: false,
-							Err: fmt.Errorf("internal panic: %v", r), Attempts: 1,
-						})
-						failed++
-						mu.Unlock()
-						e.deps.ProgressReporter.EpisodeFailed(*current, fmt.Errorf("internal error: %v", r))
-					}
-				}
-			}()
-			for ep := range jobCh {
-				current = &ep.Key
-				// Check context.
-				if ctx.Err() != nil {
-					mu.Lock()
-					outcomes = append(outcomes, domain.JobOutcome{
-						Key: ep.Key, Succeeded: false, Err: ctx.Err(), Attempts: 1,
-					})
-					failed++
-					mu.Unlock()
-					continue
-				}
-
-				log.Info("resolving media",
-					domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-				)
-
-				// Resolve media (ffprobe / HLS fetch).
-				media, err := e.deps.MediaResolver.Resolve(ctx, ep, cfg.Quality)
-				if err != nil {
-					mu.Lock()
-					consecutiveFails++
-					cf := consecutiveFails
-					log.Warn("media resolution failed",
-						domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-						domain.F("error", err.Error()),
-						domain.F("consecutive_fails", cf),
-					)
-					if cf >= consecutiveFailLimit {
-						stopDispatch = true
-						log.Warn("stopping: too many consecutive failures — CDN links may have "+
-							"expired. Try re-fetching the feed for fresh links.",
-							domain.F("succeeded_so_far", succeeded),
-						)
-					}
-					outcomes = append(outcomes, domain.JobOutcome{
-						Key: ep.Key, Succeeded: false, Err: err, Attempts: 1,
-					})
-					failed++
-					mu.Unlock()
-					e.deps.ProgressReporter.EpisodeFailed(ep.Key, err)
-					continue
-				}
-
-				// Success resets the consecutive fail counter.
-				mu.Lock()
-				consecutiveFails = 0
-				mu.Unlock()
-
-				// Log resolved quality info.
-				qualityInfo := media.Video.Resolution
-				if media.Video.BitRate > 0 {
-					qualityInfo = fmt.Sprintf("%s @ %d kbps", media.Video.Resolution, media.Video.BitRate)
-				}
-				log.Info("media resolved",
-					domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-					domain.F("quality", qualityInfo),
-					domain.F("audio_tracks", len(media.Audio)),
-				)
-
-				// Build output path.
-				outPath, err := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, ep)
-				if err != nil {
-					log.Warn("output path failed, skipping",
-						domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-						domain.F("error", err.Error()),
-					)
-					mu.Lock()
-					skipped++
-					mu.Unlock()
-					continue
-				}
-				if err := e.deps.OutputLayout.EnsureDirs(outPath); err != nil {
-					log.Warn("cannot create directory, skipping",
-						domain.F("path", outPath), domain.F("error", err.Error()),
-					)
-					mu.Lock()
-					skipped++
-					mu.Unlock()
-					continue
-				}
-
-				job := domain.Job{
-					Episode:     ep,
-					Media:       media,
-					OutPath:     outPath,
-					PosterPath:  posterPath,
-					SeriesTitle: series.Title,
-				}
-
-				// Download with retry: CDN may truncate streams under parallel
-				// load. We retry up to 2 additional times with increasing pauses.
-				const maxDownloadAttempts = 3
-				var dlErr error
-				for attempt := 1; attempt <= maxDownloadAttempts; attempt++ {
-					if ctx.Err() != nil {
-						dlErr = ctx.Err()
-						break
-					}
-
-					e.deps.ProgressReporter.EpisodeStarted(ep.Key)
-					dlErr = e.deps.Downloader.Download(ctx, job, e.deps.ProgressReporter)
-					if dlErr == nil {
-						break
-					}
-
-					log.Warn("download attempt failed",
-						domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-						domain.F("attempt", attempt),
-						domain.F("max_attempts", maxDownloadAttempts),
-						domain.F("error", dlErr.Error()),
-					)
-					e.deps.ProgressReporter.EpisodeFailed(ep.Key, dlErr)
-
-					if attempt < maxDownloadAttempts {
-						// Increasing pause before retry (10s, 20s) to let CDN recover.
-						delay := time.Duration(attempt) * 10 * time.Second
-						select {
-						case <-ctx.Done():
-							dlErr = ctx.Err()
-						case <-time.After(delay):
-						}
-					}
-				}
-
-				if dlErr != nil {
-					mu.Lock()
-					outcomes = append(outcomes, domain.JobOutcome{
-						Key: ep.Key, Succeeded: false, Err: dlErr, Attempts: maxDownloadAttempts,
-					})
-					failed++
-					mu.Unlock()
-					continue
-				}
-
-				// Mark completed with full metadata.
-				info, statErr := os.Stat(job.OutPath)
-				var fileSize int64
-				if statErr == nil {
-					fileSize = info.Size()
-				}
-				completedInfo := domain.CompletedInfo{
-					Key:        ep.Key,
-					Path:       job.OutPath,
-					Bytes:      fileSize,
-					Title:      ep.Title,
-					Quality:    ep.Quality,
-					Resolution: job.Media.Video.Resolution,
-					BitRate:    job.Media.Video.BitRate,
-					PageLink:   ep.PageLink,
-					MediaURL:   job.Media.Source.URL,
-				}
-				if err := e.deps.StateStore.MarkCompleted(ctx, completedInfo); err != nil {
-					log.Warn("failed to persist state",
-						domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
-						domain.F("error", err.Error()),
-					)
-				}
-				mu.Lock()
-				outcomes = append(outcomes, domain.JobOutcome{
-					Key: ep.Key, Succeeded: true, Attempts: 1,
-				})
-				succeeded++
-				mu.Unlock()
-				e.deps.ProgressReporter.EpisodeCompleted(ep.Key)
-			}
-		}()
-	}
-
-	// Dispatch episodes to workers.
-	for _, ep := range selected {
-		// Check context (SIGINT).
-		if ctx.Err() != nil {
-			log.Info("interrupted, stopping dispatch")
-			break
-		}
-
-		// Check if we should stop due to consecutive failures.
-		mu.Lock()
-		shouldStop := stopDispatch
-		mu.Unlock()
-		if shouldStop {
-			mu.Lock()
-			skipped++
-			mu.Unlock()
-			continue
-		}
-
-		select {
-		case jobCh <- ep:
-		case <-ctx.Done():
-			log.Info("interrupted, stopping dispatch")
-			mu.Lock()
-			skipped++
-			mu.Unlock()
-		}
-	}
-	close(jobCh)
-
-	// Wait for all workers to finish.
-	wg.Wait()
-
-	return domain.RunResult{
-		Total:     len(selected),
-		Succeeded: succeeded,
-		Failed:    failed,
-		Skipped:   skipped,
-		Outcomes:  outcomes,
-	}, nil
-}
-
-// ---------------------------------------------------------------------------
-// HLS Pipeline
-// ---------------------------------------------------------------------------
 
 // runHLS implements the HLS segment-based download pipeline.
 // It scrapes the page for PLAYER_PLAYLIST, selects quality, downloads via HLS segments.
@@ -586,8 +203,19 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// once new episodes are exhausted, cycled with backoff until it succeeds or
 	// exhausts its attempt budget. Partial segments (.hls-tmp) are preserved so
 	// each reattempt resumes instead of restarting.
-	var succeeded, failed, skipped int
-	var outcomes []domain.JobOutcome
+	// Shared run state. mu guards the counters, the outcomes slice, both work
+	// queues and inFlight; episodes download in parallel, so every mutation of
+	// this state must hold the lock. The progress reporter has its own internal
+	// locking and is therefore called without holding mu.
+	var (
+		mu         sync.Mutex
+		succeeded  int
+		failed     int
+		skipped    int
+		outcomes   []domain.JobOutcome
+		retryQueue []*pendingEpisode
+		inFlight   int
+	)
 
 	// Build the initial work list, preserving order and skipping episodes with
 	// no manifest URL.
@@ -604,13 +232,17 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		newQueue = append(newQueue, &pendingEpisode{ep: ep, manifest: manifestURL})
 	}
 
-	var retryQueue []*pendingEpisode
-
 	// processOne runs a single attempt for a pending episode and routes the
 	// outcome: success → completed; transient failure → re-park (or give up
-	// after the attempt budget); fatal failure → mark failed.
+	// after the attempt budget); fatal failure → mark failed. The download runs
+	// outside mu so episodes proceed in parallel; the lock is taken only to
+	// mutate shared counters and the retry queue.
 	processOne := func(pe *pendingEpisode) {
 		if ctx.Err() != nil {
+			// Re-park so the post-loop sweep accounts it in the result totals.
+			mu.Lock()
+			retryQueue = append(retryQueue, pe)
+			mu.Unlock()
 			return
 		}
 		pe.attempts++
@@ -619,8 +251,10 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		res, err := e.attemptHLSEpisode(ctx, cfg, series, pe.ep, pe.manifest, posterPath)
 		switch res {
 		case epSuccess:
+			mu.Lock()
 			succeeded++
 			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Succeeded: true, Attempts: pe.attempts})
+			mu.Unlock()
 			e.deps.ProgressReporter.EpisodeCompleted(pe.ep.Key)
 
 		case epRetryable:
@@ -630,15 +264,24 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 					domain.F("attempts", pe.attempts),
 					domain.F("error", err.Error()),
 				)
+				// Budget exhausted — clean up the segment temp directory that
+				// was preserved across retries for resume.
+				if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
+					os.RemoveAll(outPath + ".ts.hls-tmp")
+				}
+				mu.Lock()
 				failed++
 				outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+				mu.Unlock()
 				e.deps.ProgressReporter.EpisodeFailed(pe.ep.Key, err)
 				return
 			}
 			wait := e.backoffFor(pe.attempts)
 			pe.lastErr = err
 			pe.nextAt = time.Now().Add(wait)
+			mu.Lock()
 			retryQueue = append(retryQueue, pe)
+			mu.Unlock()
 			log.Info("episode download interrupted, will retry later",
 				domain.F("episode", epLabel),
 				domain.F("attempt", pe.attempts),
@@ -655,56 +298,84 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				domain.F("episode", epLabel),
 				domain.F("error", err.Error()),
 			)
+			mu.Lock()
 			failed++
 			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+			mu.Unlock()
 			e.deps.ProgressReporter.EpisodeFailed(pe.ep.Key, err)
 		}
 	}
 
-	for (len(newQueue) > 0 || len(retryQueue) > 0) && ctx.Err() == nil {
-		// Prefer a fresh episode when one is available.
+	// takeTask picks the next runnable episode under the lock. It returns
+	// (task, wait, done): a task to run now; or no task with a wait hint (sleep
+	// then re-poll — e.g. a retry still inside its backoff window, or other
+	// episodes are mid-flight and may re-park work); or done=true when both
+	// queues are empty and nothing is in flight, so the worker may exit.
+	takeTask := func() (*pendingEpisode, time.Duration, bool) {
+		mu.Lock()
+		defer mu.Unlock()
 		if len(newQueue) > 0 {
-			// Snapshot how many episodes are already parked: only those (which
-			// were deferred in a previous iteration) are eligible to be
-			// interleaved after this new episode. This yields the desired
-			// "new → previously-failed → new → …" cadence instead of retrying
-			// an episode in the same step it just failed.
-			eligible := len(retryQueue)
-
 			pe := newQueue[0]
 			newQueue = newQueue[1:]
-			processOne(pe) // may append the just-failed episode to retryQueue
-
-			// Interleave: give one ready, previously-deferred episode another
-			// shot (e.g. finished E07 → retry E05 → E08 → …).
-			if idx := readyDeferredIndex(retryQueue[:eligible], time.Now()); idx >= 0 {
-				pe2 := retryQueue[idx]
-				retryQueue = append(retryQueue[:idx], retryQueue[idx+1:]...)
-				processOne(pe2)
-			}
-			continue
+			inFlight++
+			return pe, 0, false
 		}
-
-		// Only deferred episodes remain — process the earliest-due one,
-		// waiting for its backoff window if necessary.
-		idx := earliestDeferredIndex(retryQueue)
-		pe := retryQueue[idx]
-		retryQueue = append(retryQueue[:idx], retryQueue[idx+1:]...)
-		if wait := time.Until(pe.nextAt); wait > 0 {
-			log.Info("waiting before next retry",
-				domain.F("episode", fmt.Sprintf("S%02dE%02d", pe.ep.Key.Season, pe.ep.Key.Episode)),
-				domain.F("wait", wait.Round(time.Second).String()),
-			)
-			select {
-			case <-ctx.Done():
-				return domain.RunResult{Total: len(selected), Succeeded: succeeded, Failed: failed, Skipped: skipped, Outcomes: outcomes}, ctx.Err()
-			case <-time.After(wait):
+		if len(retryQueue) > 0 {
+			idx := earliestDeferredIndex(retryQueue)
+			pe := retryQueue[idx]
+			if wait := time.Until(pe.nextAt); wait > 0 {
+				if wait > time.Second {
+					wait = time.Second // cap so cancellation stays responsive
+				}
+				return nil, wait, false
 			}
+			retryQueue = append(retryQueue[:idx], retryQueue[idx+1:]...)
+			inFlight++
+			return pe, 0, false
 		}
-		processOne(pe)
+		if inFlight > 0 {
+			return nil, 200 * time.Millisecond, false
+		}
+		return nil, 0, true
 	}
 
-	// Episodes still parked when interrupted count as failures for the summary.
+	// Download episodes in parallel: cfg.MaxConcurrency episodes at a time.
+	// Segment concurrency within each episode is bounded separately by the HLS
+	// downloader, so the two budgets don't multiply into a CDN flood.
+	workers := cfg.MaxConcurrency
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				pe, wait, done := takeTask()
+				if done {
+					return
+				}
+				if pe == nil {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(wait):
+					}
+					continue
+				}
+				processOne(pe)
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Episodes still parked in the retry queue when interrupted count as
+	// failures for the summary. Their segment temp directories are cleaned up
+	// because no further resume will happen after cancellation.
 	for _, pe := range retryQueue {
 		failed++
 		err := pe.lastErr
@@ -712,15 +383,30 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 			err = ctx.Err()
 		}
 		outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+		if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
+			os.RemoveAll(outPath + ".ts.hls-tmp")
+		}
 	}
 
-	return domain.RunResult{
+	// Episodes that were queued but never started (newQueue not drained due to
+	// cancellation) are also accounted so succeeded+failed+skipped == Total.
+	for _, pe := range newQueue {
+		failed++
+		err := ctx.Err()
+		outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+	}
+
+	result := domain.RunResult{
 		Total:     len(selected),
 		Succeeded: succeeded,
 		Failed:    failed,
 		Skipped:   skipped,
 		Outcomes:  outcomes,
-	}, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // maxEpisodeAttempts bounds how many times the engine reattempts a single
@@ -830,6 +516,10 @@ func (e *engine) attemptHLSEpisode(
 		if isTransientDownloadError(dlErr) {
 			return epRetryable, dlErr
 		}
+		// Terminal failure: clean up the segment temp directory so it does not
+		// accumulate on disk. Retryable paths deliberately leave it in place so
+		// the next attempt can resume from already-downloaded segments.
+		os.RemoveAll(tsPath + ".hls-tmp")
 		return epFatal, dlErr
 	}
 

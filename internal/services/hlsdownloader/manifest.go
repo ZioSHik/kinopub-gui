@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/niazlv/kinopub-downloader/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
 // Segment represents a single HLS segment from a media playlist.
@@ -167,21 +167,28 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 	scanner := bufio.NewScanner(r)
 	result := &MediaPlaylist{}
 
-	var pendingDuration float64
+	var (
+		pendingDuration float64
+		sawExtinf       bool
+	)
 	index := 0
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
 		if strings.HasPrefix(line, "#EXTINF:") {
-			// Parse duration: #EXTINF:10.0, or #EXTINF:10.0
+			// Parse duration: #EXTINF:10.0, or #EXTINF:10.0,title
 			durStr := line[len("#EXTINF:"):]
 			if idx := strings.IndexByte(durStr, ','); idx >= 0 {
 				durStr = durStr[:idx]
 			}
-			dur, _ := strconv.ParseFloat(strings.TrimSpace(durStr), 64)
+			dur, perr := strconv.ParseFloat(strings.TrimSpace(durStr), 64)
+			if perr != nil {
+				return nil, fmt.Errorf("invalid EXTINF duration %q: %w", durStr, perr)
+			}
 			pendingDuration = dur
-		} else if !strings.HasPrefix(line, "#") && line != "" && pendingDuration > 0 {
+			sawExtinf = true
+		} else if !strings.HasPrefix(line, "#") && line != "" && sawExtinf {
 			seg := Segment{
 				URL:      resolveURL(baseURL, line),
 				Duration: pendingDuration,
@@ -190,6 +197,7 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 			result.Segments = append(result.Segments, seg)
 			result.TotalDuration += pendingDuration
 			pendingDuration = 0
+			sawExtinf = false
 			index++
 		}
 	}
