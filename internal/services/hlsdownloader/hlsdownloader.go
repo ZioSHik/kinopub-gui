@@ -149,10 +149,20 @@ func audioRenditionsFor(master *MasterPlaylist, selected Variant) []AudioRenditi
 	if selected.AudioGroup == "" {
 		return out
 	}
+	// kino.pub's mixed-codec (4K) masters list each dub twice inside one group —
+	// once for the AVC video, once for the HEVC video — under the identical NAME.
+	// Deduplicate by name+language so a single picked dub isn't downloaded twice.
+	seen := make(map[string]bool)
 	for _, a := range master.Audio {
-		if a.GroupID == selected.AudioGroup && a.URI != "" {
-			out = append(out, a)
+		if a.GroupID != selected.AudioGroup || a.URI == "" {
+			continue
 		}
+		key := a.Name + "\x00" + a.Language
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, a)
 	}
 	return out
 }

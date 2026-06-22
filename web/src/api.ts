@@ -224,6 +224,7 @@ export interface DiscoverDetail extends DiscoverItem {
   seasons?: DiscoverSeason[];
   episodeCount: number;
   itemUrl: string;
+  qualities?: string[]; // distinct downloadable resolutions, highest first
 }
 
 export interface DiscoverCollection {

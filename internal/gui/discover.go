@@ -89,6 +89,10 @@ type DiscoverDetail struct {
 	Seasons      []DiscoverSeason `json:"seasons,omitempty"`
 	EpisodeCount int              `json:"episodeCount"`
 	ItemURL      string           `json:"itemUrl"`
+	// Qualities are the distinct downloadable resolutions actually available for
+	// this title (highest first), so the download menu shows real options instead
+	// of a hardcoded list.
+	Qualities []string `json:"qualities,omitempty"`
 }
 
 // DiscoverCollection is a подборка card.
@@ -260,6 +264,50 @@ func collectSeasons(it kinopubapi.Item) ([]DiscoverSeason, int) {
 	return seasons, count
 }
 
+// collectQualities returns the distinct downloadable quality labels available
+// for an item (e.g. ["2160p","1080p","720p","480p"]), highest first. It samples
+// the first episode/video with files; mixed-codec masters list each quality
+// twice (H.264 + HEVC), so labels are deduped.
+func collectQualities(it kinopubapi.Item) []string {
+	maxH := map[string]int{}
+	add := func(files []kinopubapi.File) {
+		for _, f := range files {
+			if f.Quality == "" {
+				continue
+			}
+			if h, ok := maxH[f.Quality]; !ok || f.H > h {
+				maxH[f.Quality] = f.H
+			}
+		}
+	}
+	if len(it.Seasons) > 0 {
+		for _, s := range it.Seasons {
+			for _, e := range s.Episodes {
+				if len(e.Files) > 0 {
+					add(e.Files)
+					break
+				}
+			}
+			if len(maxH) > 0 {
+				break
+			}
+		}
+	} else {
+		for _, v := range it.Videos {
+			if len(v.Files) > 0 {
+				add(v.Files)
+				break
+			}
+		}
+	}
+	labels := make([]string, 0, len(maxH))
+	for label := range maxH {
+		labels = append(labels, label)
+	}
+	sort.Slice(labels, func(a, b int) bool { return maxH[labels[a]] > maxH[labels[b]] })
+	return labels
+}
+
 func toDiscoverDetail(it kinopubapi.Item) DiscoverDetail {
 	seasons, count := collectSeasons(it)
 	d := DiscoverDetail{
@@ -272,6 +320,7 @@ func toDiscoverDetail(it kinopubapi.Item) DiscoverDetail {
 		Seasons:      seasons,
 		EpisodeCount: count,
 		ItemURL:      kinopubapi.ItemURL(it.ID.String()),
+		Qualities:    collectQualities(it),
 	}
 	return d
 }

@@ -358,7 +358,7 @@ export function TitleDetail({
           {/* Download bar */}
           <div className="flex flex-wrap items-center gap-3 border-t border-white/[0.05] pt-4">
             <select className="input w-auto" value={quality} onChange={(e) => setQuality(e.target.value)}>
-              {QUALITIES.map((q) => (
+              {["", ...(detail.qualities?.length ? detail.qualities : QUALITIES.filter(Boolean))].map((q) => (
                 <option key={q} value={q}>
                   {q === "" ? t("Auto (highest)") : q}
                 </option>

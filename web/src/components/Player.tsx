@@ -267,7 +267,10 @@ export function Player({
     const start = (src: string) => {
       if (!alive) return;
       if (Hls.isSupported()) {
-        hls = new Hls({ maxBufferLength: 30 });
+        // A high default bandwidth estimate so adaptive mode starts at a high
+        // rung (reaching 4K quickly on a fast line) instead of ramping up from
+        // the bottom; real throughput measurements take over within seconds.
+        hls = new Hls({ maxBufferLength: 30, abrEwmaDefaultEstimate: 25_000_000 });
         hlsRef.current = hls;
         hls.attachMedia(video);
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -275,29 +278,34 @@ export function Player({
           retries = 0;
           setLoading(false);
           readAudio(hls);
-          // De-duplicate quality rungs: kino.pub's mixed 4K master lists each
-          // resolution twice — HEVC + H.264. Prefer H.264 (avc1): every browser
-          // decodes it, whereas isTypeSupported lies about HEVC on machines that
-          // advertise but can't actually decode it (the stall we hit).
+          // kino.pub's mixed 4K master lists every rung twice — HEVC + H.264.
+          // Drop the HEVC twins so BOTH adaptive (Auto) and manual selection only
+          // ever pick decodable H.264 levels: isTypeSupported lies about HEVC on
+          // machines that advertise but can't actually decode it (a hard stall).
           const isAVC = (c?: string) => /avc1|h264/i.test(c || "");
-          const seen = new Map<string, { id: number; label: string; px: number; avc: boolean }>();
+          if (hls.levels.some((l) => isAVC((l as any).videoCodec))) {
+            for (let i = hls.levels.length - 1; i >= 0; i--) {
+              if (!isAVC((hls.levels[i] as any).videoCodec)) {
+                try {
+                  hls.removeLevel(i);
+                } catch {
+                  /* older hls.js — codec filter below still de-dups the menu */
+                }
+              }
+            }
+          }
+          // Build the quality menu (one entry per resolution) from what remains.
+          const seen = new Map<string, { id: number; label: string; px: number }>();
           hls.levels.forEach((l, i) => {
             if (!codecSupported((l as any).videoCodec)) return;
             const label = levelLabel(l.width, l.height);
-            const avc = isAVC((l as any).videoCodec);
-            const ex = seen.get(label);
-            if (!ex || (avc && !ex.avc)) {
-              seen.set(label, { id: i, label, px: (l.width || 0) * (l.height || 0) || l.bitrate || 0, avc });
-            }
+            if (!seen.has(label)) seen.set(label, { id: i, label, px: (l.width || 0) * (l.height || 0) || l.bitrate || 0 });
           });
-          const lv = [...seen.values()].sort((a, b) => b.px - a.px);
-          setLevels(lv.map(({ id, label }) => ({ id, label })));
-          if (lv.length) {
-            hls.currentLevel = lv[0].id;
-            setActiveLevel(lv[0].id);
-          } else {
-            setActiveLevel(-1);
-          }
+          setLevels([...seen.values()].sort((a, b) => b.px - a.px).map(({ id, label }) => ({ id, label })));
+          // Default to adaptive ("Auto"): hls.js picks by measured bandwidth,
+          // downgrades when the connection drops and climbs back when it recovers.
+          hls.currentLevel = -1;
+          setActiveLevel(-1);
           void video.play().catch(() => {});
         });
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => alive && hls && readAudio(hls));
