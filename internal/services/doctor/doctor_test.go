@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -228,6 +229,9 @@ func TestCheckEntry_SizeMismatchLarger(t *testing.T) {
 }
 
 func TestCheckEntry_StatErrorNotNotExist(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports a not-exist error (not ENOTDIR) for a file used as a parent component")
+	}
 	// A path whose parent component is a regular file yields ENOTDIR (not
 	// IsNotExist), exercising the "cannot stat file" branch.
 	dir := t.TempDir()

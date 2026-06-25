@@ -3,6 +3,7 @@ package credstore
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -183,6 +184,9 @@ func TestSaveCiphertextIsOpaque(t *testing.T) {
 
 // The credential file must be written with owner-only permissions.
 func TestSavePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not enforced on Windows (files report 0666)")
+	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	if err := Save(Credentials{Cookie: "c"}); err != nil {
@@ -381,7 +385,8 @@ func TestCredDirHonorsXDG(t *testing.T) {
 func TestCredDirHomeFallback(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", home)        // os.UserHomeDir() on unix
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir() on Windows
 
 	dir, err := credDir()
 	if err != nil {
