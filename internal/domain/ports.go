@@ -218,6 +218,8 @@ type PagePlaylist struct {
 	ItemID   int
 	Title    string
 	Poster   string
+	Type     string   // kino.pub item type: movie, serial, documovie, …
+	Genres   []string // genre titles
 	Episodes []PageEpisode
 	Seasons  []PageSeason
 }

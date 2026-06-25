@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
@@ -20,6 +21,7 @@ const (
 	statusCompleted = "completed"
 	statusFailed    = "failed"
 	statusCanceled  = "canceled"
+	statusPaused    = "paused"
 )
 
 // Episode lifecycle states surfaced to the UI.
@@ -29,6 +31,7 @@ const (
 	epCompleted = "completed"
 	epFailed    = "failed"
 	epDeferred  = "deferred"
+	epPaused    = "paused"
 )
 
 const maxJobLogs = 400
@@ -141,13 +144,43 @@ type Job struct {
 	summary  *SummaryView
 	errMsg   string
 
+	// cfg and seedTitles are retained so a finished job can be re-run verbatim
+	// ("retry"); the engine skips already-completed episodes via the state store,
+	// so a retry re-downloads only what failed.
+	cfg        domain.RunConfig
+	seedTitles map[string]string
+
 	pendingAudio *AudioRequestView
 	audioAnswer  chan []int // delivers the interactive audio selection
 	logs         []LogEntry
 
-	cancel context.CancelFunc
-	done   <-chan struct{} // closed when the job's context is canceled/finished
-	dirty  bool            // pending broadcast
+	// prioritize carries "download next" requests from the UI to the running
+	// engine, which drains it between episodes. Buffered so a burst of clicks
+	// never blocks the HTTP handler; sends are best-effort (dropped when full).
+	prioritize chan domain.EpisodeKey
+
+	// pauseEp / resumeEp hold or release an individual episode (including one that
+	// is actively downloading); retryEp re-queues a failed episode in place. The
+	// running engine's control goroutine drains them. Buffered; best-effort sends.
+	pauseEp  chan domain.EpisodeKey
+	resumeEp chan domain.EpisodeKey
+	retryEp  chan domain.EpisodeKey
+
+	// paused reports whether the active run is being paused (vs. canceled), so the
+	// engine preserves partial segment data for a later resume. Read by the engine
+	// via deps.Paused; reset at the start of every run.
+	paused atomic.Bool
+
+	// retryOnly scopes the NEXT run to specific episodes (a per-episode retry of a
+	// finished job), so it re-downloads only those — not every not-yet-completed
+	// episode. Consumed (cleared) at the start of each run. Guarded by mu.
+	retryOnly []domain.EpisodeKey
+
+	cancel          context.CancelFunc
+	cancelRequested bool            // set if canceled before its engine started
+	urgent          bool            // scheduler: may bypass maxActive (guarded by JobManager.mu)
+	done            <-chan struct{} // closed when the job's context is canceled/finished
+	dirty           bool            // pending broadcast
 }
 
 func newJob(id, url string, cfg domain.RunConfig) *Job {
@@ -161,6 +194,11 @@ func newJob(id, url string, cfg domain.RunConfig) *Job {
 		createdAt:  time.Now(),
 		episodes:   make(map[string]*EpisodeView),
 		titles:     make(map[string]string),
+		cfg:        cfg,
+		prioritize: make(chan domain.EpisodeKey, 128),
+		pauseEp:    make(chan domain.EpisodeKey, 128),
+		resumeEp:   make(chan domain.EpisodeKey, 128),
+		retryEp:    make(chan domain.EpisodeKey, 128),
 	}
 }
 
@@ -255,6 +293,16 @@ type JobManager struct {
 	seq  int
 
 	hub *Hub
+
+	// Global download scheduler. maxActive bounds how many jobs run at once
+	// (0 = unlimited); extra jobs wait in pending (FIFO, reorderable) and are
+	// dispatched as running slots free up. startFn launches a job's run goroutine
+	// and is injected by the server (it needs the API client). These are guarded
+	// by mu.
+	maxActive int
+	running   int
+	pending   []*Job
+	startFn   func(*Job)
 }
 
 func newJobManager(hub *Hub) *JobManager {
@@ -264,6 +312,108 @@ func newJobManager(hub *Hub) *JobManager {
 	}
 	go m.flushLoop()
 	return m
+}
+
+// setMaxActive updates the global concurrency limit and dispatches any jobs the
+// new headroom now allows (e.g. the user raised the limit). n <= 0 means no
+// limit.
+func (m *JobManager) setMaxActive(n int) {
+	m.mu.Lock()
+	m.maxActive = n
+	m.mu.Unlock()
+	m.dispatch()
+}
+
+// submit registers a job and queues it for dispatch. front=true inserts it at
+// the head of the wait queue (used for per-episode retries, which should not
+// wait behind unrelated downloads). The job starts immediately if a slot is
+// free (or the limit is unlimited).
+func (m *JobManager) submit(j *Job, front bool) {
+	m.add(j)
+	m.mu.Lock()
+	if front {
+		// Front-of-queue jobs are per-episode retries: besides jumping the line
+		// they bypass the global concurrency limit so they truly start "now",
+		// even when the parent download already occupies every slot.
+		j.urgent = true
+		m.pending = append([]*Job{j}, m.pending...)
+	} else {
+		m.pending = append(m.pending, j)
+	}
+	m.mu.Unlock()
+	m.publishNow(j)
+	m.dispatch()
+}
+
+// dispatch starts as many pending jobs as the concurrency limit allows. startFn
+// is invoked outside the lock so a job's goroutine launch can't deadlock the
+// scheduler.
+func (m *JobManager) dispatch() {
+	m.mu.Lock()
+	var toStart []*Job
+	for len(m.pending) > 0 {
+		j := m.pending[0]
+		hasSlot := m.maxActive <= 0 || m.running < m.maxActive
+		// Start when within the limit, or when the head job is urgent (a
+		// per-episode retry) — urgent jobs accept transient over-subscription,
+		// which self-balances as running jobs finish. A non-urgent head with no
+		// slot blocks the queue (FIFO), so it waits for a slot.
+		if !hasSlot && !j.urgent {
+			break
+		}
+		m.pending = m.pending[1:]
+		m.running++
+		toStart = append(toStart, j)
+	}
+	fn := m.startFn
+	m.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	for _, j := range toStart {
+		fn(j)
+	}
+}
+
+// jobFinished is called once when a running job's goroutine exits; it frees the
+// job's slot and dispatches the next waiting job.
+func (m *JobManager) jobFinished() {
+	m.mu.Lock()
+	if m.running > 0 {
+		m.running--
+	}
+	m.mu.Unlock()
+	m.dispatch()
+}
+
+// prioritizeJob moves a still-queued job to the head of the wait queue so it is
+// dispatched before the other waiting jobs. Returns false if the job is unknown
+// or not currently waiting (already running/finished — nothing to reorder).
+func (m *JobManager) prioritizeJob(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, j := range m.pending {
+		if j.id == id {
+			m.pending = append(m.pending[:i], m.pending[i+1:]...)
+			m.pending = append([]*Job{j}, m.pending...)
+			return true
+		}
+	}
+	return false
+}
+
+// dropPending removes a job from the wait queue if present (e.g. it was canceled
+// before it ever started). Returns true if it was waiting.
+func (m *JobManager) dropPending(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, j := range m.pending {
+		if j.id == id {
+			m.pending = append(m.pending[:i], m.pending[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // flushLoop periodically broadcasts jobs marked dirty, bounding the event rate
@@ -386,9 +536,9 @@ func (m *JobManager) remove(id string) (bool, bool) {
 		m.mu.Unlock()
 		return false, false
 	}
-	if !j.finished() {
+	if !j.finished() && j.status != statusPaused {
 		m.mu.Unlock()
-		return false, true // exists but running
+		return false, true // exists but active (running/queued) — must be stopped first
 	}
 	delete(m.jobs, id)
 	m.mu.Unlock()
@@ -417,6 +567,10 @@ func (m *JobManager) clearFinished() int {
 // effort), wires the GUI reporter/chooser/logger, runs the engine, and records
 // the outcome. It is meant to run in its own goroutine.
 func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, titles map[string]string, title, poster string, apiClient *kinopubapi.Client) {
+	// Free this job's scheduler slot and dispatch the next queued job when the
+	// run exits, on every path (success, failure, panic, early return). Registered
+	// first so it runs last — after the recover below has finalized the status.
+	defer m.jobFinished()
 	ctx, cancel := context.WithCancel(parent)
 	// A panic anywhere in the run path must fail just this job, not crash the
 	// whole server (and every other in-flight download).
@@ -441,7 +595,21 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 	for k, v := range titles {
 		j.titles[k] = v
 	}
+	canceledEarly := j.cancelRequested
+	// Consume a per-episode retry scope for THIS run so only the requested
+	// episodes are re-downloaded (the plan still covers the full series).
+	if len(j.retryOnly) > 0 {
+		cfg.RetryOnly = j.retryOnly
+		j.retryOnly = nil
+	}
 	j.mu.Unlock()
+	// Honor a pause/cancel that arrived after dispatch but before the cancel func
+	// was installed (so a Pause/Stop click on a just-started job is never lost).
+	// paused is checked first: run() finalization turns a paused stop into the
+	// "paused" status (preserving progress) rather than "canceled".
+	if j.paused.Load() || canceledEarly {
+		cancel()
+	}
 	m.publishNow(j)
 
 	reporter := newEventReporter(m, j)
@@ -456,7 +624,7 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 		m.failJob(j, "not signed in to kino.pub — sign in in Settings to download")
 		return
 	}
-	deps, err := buildEngineDeps(cfg, apiClient, logger, reporter, chooser)
+	deps, err := buildEngineDeps(cfg, apiClient, logger, reporter, chooser, j.prioritize, j.pauseEp, j.resumeEp, j.retryEp, j.paused.Load)
 	if err != nil {
 		m.failJob(j, "setup failed: "+err.Error())
 		return
@@ -488,6 +656,11 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 		Skipped:   result.Skipped,
 	}
 	switch {
+	case j.paused.Load():
+		// Paused (not canceled): keep progress; episodes are held as "paused" and
+		// the job can be resumed, which re-runs and continues from .hls-tmp.
+		j.status = statusPaused
+		j.errMsg = ""
 	case ctx.Err() != nil:
 		j.status = statusCanceled
 		if j.errMsg == "" {
@@ -502,8 +675,48 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 	default:
 		j.status = statusCompleted
 	}
+	if j.status == statusPaused {
+		settlePausedEpisodesLocked(j)
+	} else {
+		settleUnfinishedEpisodesLocked(j, ctx.Err() != nil)
+	}
 	j.mu.Unlock()
 	m.publishNow(j)
+}
+
+// settlePausedEpisodesLocked freezes every non-completed episode of a paused job
+// in a "paused" view state (keeping its progress), so the card reads as paused
+// rather than failed and a resume can continue. Caller must hold j.mu.
+func settlePausedEpisodesLocked(j *Job) {
+	for _, ev := range j.episodes {
+		if ev.State == epPending || ev.State == epRunning || ev.State == epDeferred {
+			ev.State = epPaused
+			ev.SpeedBps = 0
+			ev.ETASeconds = 0
+		}
+	}
+}
+
+// settleUnfinishedEpisodesLocked moves every non-completed episode of a finished
+// job to "failed". A finished run must not leave episodes frozen in a transient
+// view state: on cancel especially, the engine can re-park an episode as
+// "deferred" (reporting "retrying…") in the same instant the workers exit, so
+// the row would otherwise linger forever looking like a live retry on a job that
+// has actually stopped — with no way to stop it. Settling to "failed" gives the
+// UI a stable state with a working per-episode Retry. When the run was canceled,
+// episodes that never recorded an error are stamped "canceled" for clarity.
+// Caller must hold j.mu.
+func settleUnfinishedEpisodesLocked(j *Job, canceled bool) {
+	for _, ev := range j.episodes {
+		if ev.State == epPending || ev.State == epRunning || ev.State == epDeferred {
+			ev.State = epFailed
+			ev.SpeedBps = 0
+			ev.ETASeconds = 0
+			if ev.Error == "" && canceled {
+				ev.Error = "canceled"
+			}
+		}
+	}
 }
 
 func (m *JobManager) failJob(j *Job, msg string) {
@@ -516,17 +729,322 @@ func (m *JobManager) failJob(j *Job, msg string) {
 	m.publishNow(j)
 }
 
-// cancel stops a running job.
+// prioritizeEpisode asks a running job's engine to move an episode to the front
+// of its download queue. Returns false if the job is unknown or not currently
+// running (nothing to reorder). The send is non-blocking: if the buffer is full
+// the request is dropped, which only means the queue keeps its current order.
+func (m *JobManager) prioritizeEpisode(id string, key domain.EpisodeKey) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	live := j.status == statusRunning || j.status == statusResolving
+	ch := j.prioritize
+	j.mu.Unlock()
+	if !live || ch == nil {
+		return false
+	}
+	select {
+	case ch <- key:
+	default:
+	}
+	return true
+}
+
+// cancel stops a running job, or removes a still-queued one from the wait queue.
 func (m *JobManager) cancelJob(id string) bool {
 	j, ok := m.get(id)
 	if !ok {
 		return false
 	}
 	j.mu.Lock()
+	j.cancelRequested = true // honored by run() if its engine hasn't started yet
+	cancel := j.cancel
+	queued := j.status == statusQueued
+	j.mu.Unlock()
+
+	// Engine already running → cancel its context.
+	if cancel != nil {
+		cancel()
+		return true
+	}
+	// No engine yet. If it is still waiting for a slot, drop it from the queue and
+	// mark it canceled directly — it never incremented running, so jobFinished
+	// must NOT fire for it. If dropPending fails it was just dispatched; run()
+	// will honor cancelRequested as soon as it installs its cancel func.
+	if queued && m.dropPending(id) {
+		j.mu.Lock()
+		j.status = statusCanceled
+		if j.errMsg == "" {
+			j.errMsg = "canceled"
+		}
+		fin := time.Now()
+		j.finishedAt = &fin
+		j.mu.Unlock()
+		m.publishNow(j)
+	}
+	return true
+}
+
+// pauseJob pauses a job. A queued job is held out of dispatch; a running job is
+// stopped with its partial progress preserved (so a later resume continues from
+// where it left off). Returns false if the job is unknown or not in a pausable
+// state. The paused flag is set BEFORE any dropPending/cancel so that, even if
+// the job is dispatched concurrently, run() observes it and settles to the
+// paused (not canceled) state.
+func (m *JobManager) pauseJob(id string) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	status := j.status
+	j.mu.Unlock()
+	if status != statusQueued && status != statusResolving && status != statusRunning {
+		return false
+	}
+	j.paused.Store(true)
+
+	if status == statusQueued {
+		if m.dropPending(id) {
+			j.mu.Lock()
+			j.status = statusPaused
+			j.mu.Unlock()
+			m.publishNow(j)
+			return true
+		}
+		// Lost the race — it was just dispatched; fall through to stop its engine.
+	}
+	j.mu.Lock()
 	cancel := j.cancel
 	j.mu.Unlock()
 	if cancel != nil {
-		cancel()
+		cancel() // run() finalization settles to statusPaused (paused flag is set)
 	}
+	// If cancel is nil the job was dispatched but its cancel func isn't installed
+	// yet; run() checks the paused flag at startup and stops itself.
 	return true
+}
+
+// resumeJob re-runs a paused job. The engine skips already-completed episodes and
+// continues partial .hls-tmp segments, so the download picks up where it paused.
+// Returns false if the job is not paused.
+func (m *JobManager) resumeJob(id string) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	if j.status != statusPaused {
+		j.mu.Unlock()
+		return false
+	}
+	j.paused.Store(false)
+	j.cancelRequested = false
+	j.status = statusQueued
+	j.errMsg = ""
+	j.finishedAt = nil
+	j.mu.Unlock()
+
+	// Hand back to the scheduler; it dispatches when a slot is free (or now).
+	m.mu.Lock()
+	m.pending = append(m.pending, j)
+	m.mu.Unlock()
+	m.publishNow(j)
+	m.dispatch()
+	return true
+}
+
+// pauseEpisode holds a single not-yet-started episode (pending or parked for
+// retry) of a running job, setting it aside until resumed. Returns false if the
+// job is not running or the episode is not in a holdable state (already
+// downloading / completed / failed). The episode view is set to "paused"
+// immediately for snappy feedback; the engine drains the request and skips it.
+func (m *JobManager) pauseEpisode(id string, key domain.EpisodeKey) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	live := j.status == statusRunning || j.status == statusResolving
+	ev := j.episodes[epKey(key)]
+	// A queued, parked, or actively-downloading episode can be paused: the engine
+	// holds queued/parked ones and cancels an in-flight download (preserving its
+	// partial segments). Completed/failed/already-paused ones can't.
+	pausable := ev != nil && (ev.State == epPending || ev.State == epDeferred || ev.State == epRunning)
+	ch := j.pauseEp
+	if live && pausable {
+		ev.State = epPaused
+		ev.SpeedBps = 0
+		ev.ETASeconds = 0
+	}
+	j.mu.Unlock()
+	if !live || !pausable {
+		return false
+	}
+	select {
+	case ch <- key:
+	default:
+	}
+	m.publishNow(j)
+	return true
+}
+
+// resumeEpisode releases a paused episode back into a running job's work list.
+// Returns false if the job is not running or the episode is not paused.
+func (m *JobManager) resumeEpisode(id string, key domain.EpisodeKey) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	live := j.status == statusRunning || j.status == statusResolving
+	ev := j.episodes[epKey(key)]
+	resumable := ev != nil && ev.State == epPaused
+	ch := j.resumeEp
+	if live && resumable {
+		ev.State = epPending // engine flips it to running when it actually starts
+	}
+	j.mu.Unlock()
+	if !live || !resumable {
+		return false
+	}
+	select {
+	case ch <- key:
+	default:
+	}
+	m.publishNow(j)
+	return true
+}
+
+// retryEpisodeLive re-queues a single failed episode of a STILL-RUNNING job in
+// place (no new job card): the engine re-attempts it among its siblings. Returns
+// false if the job is not running. The episode view is optimistically reset.
+func (m *JobManager) retryEpisodeLive(id string, key domain.EpisodeKey) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	live := j.status == statusRunning || j.status == statusResolving
+	ev := j.episodes[epKey(key)]
+	// Never live-retry an episode that already completed (would re-download and
+	// double-count) or one already downloading; the engine guards this too.
+	retriable := ev != nil && ev.State != epCompleted && ev.State != epRunning
+	ch := j.retryEp
+	if live && retriable {
+		ev.State = epPending
+		ev.Error = ""
+		ev.Percent = 0
+		ev.SpeedBps = 0
+		ev.ETASeconds = 0
+	}
+	j.mu.Unlock()
+	if !live || !retriable {
+		return false
+	}
+	select {
+	case ch <- key:
+	default:
+	}
+	m.publishNow(j)
+	return true
+}
+
+// rerunJob re-runs a FINISHED or PAUSED job in place (reusing the same card): it
+// re-submits to the scheduler, and the engine skips episodes already completed
+// in the state store while re-downloading the rest (failed/never-started). This
+// is how a per-episode or whole-job retry avoids spawning a new job. Returns
+// false if the job is still active (queued/running).
+func (m *JobManager) rerunJob(id string) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	if !j.finished() && j.status != statusPaused {
+		j.mu.Unlock()
+		return false
+	}
+	j.paused.Store(false)
+	j.cancelRequested = false
+	j.status = statusQueued
+	j.errMsg = ""
+	j.finishedAt = nil
+	j.summary = nil   // recomputed by the new run
+	j.retryOnly = nil // whole-job retry: re-attempt every not-yet-completed episode
+	j.mu.Unlock()
+
+	m.mu.Lock()
+	m.pending = append(m.pending, j)
+	m.mu.Unlock()
+	m.publishNow(j)
+	m.dispatch()
+	return true
+}
+
+// rerunJobEpisode retries a SINGLE episode of a finished/paused job in place,
+// re-downloading only that episode (not every not-yet-completed one). If a rerun
+// is already pending (status queued), it widens that rerun's scope to include
+// this episode too. Returns false if the job is actively running (use the live
+// retry path instead).
+func (m *JobManager) rerunJobEpisode(id string, key domain.EpisodeKey) bool {
+	j, ok := m.get(id)
+	if !ok {
+		return false
+	}
+	j.mu.Lock()
+	resetRow := func() {
+		if ev := j.episodes[epKey(key)]; ev != nil {
+			ev.State = epPending
+			ev.Error = ""
+			ev.Percent = 0
+			ev.SpeedBps = 0
+			ev.ETASeconds = 0
+		}
+	}
+	queue := false
+	switch {
+	case j.status == statusQueued:
+		// A rerun is already pending — widen its scope to include this episode.
+		if !containsKey(j.retryOnly, key) {
+			j.retryOnly = append(j.retryOnly, key)
+		}
+		resetRow()
+	case j.finished() || j.status == statusPaused:
+		j.paused.Store(false)
+		j.cancelRequested = false
+		j.status = statusQueued
+		j.errMsg = ""
+		j.finishedAt = nil
+		j.summary = nil
+		j.retryOnly = []domain.EpisodeKey{key}
+		resetRow()
+		queue = true
+	default:
+		j.mu.Unlock()
+		return false
+	}
+	j.mu.Unlock()
+
+	if queue {
+		m.mu.Lock()
+		m.pending = append(m.pending, j)
+		m.mu.Unlock()
+		m.dispatch()
+	}
+	m.publishNow(j)
+	return true
+}
+
+// containsKey reports whether keys already holds an episode with the same
+// season+episode.
+func containsKey(keys []domain.EpisodeKey, k domain.EpisodeKey) bool {
+	for _, e := range keys {
+		if e.Season == k.Season && e.Episode == k.Episode {
+			return true
+		}
+	}
+	return false
 }

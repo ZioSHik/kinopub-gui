@@ -273,3 +273,31 @@ func TestOpenPathAllowed(t *testing.T) {
 		t.Errorf("path outside library should be rejected: %q", outside)
 	}
 }
+
+func TestIsMovieDownload(t *testing.T) {
+	ep := func(season, episode int) LibraryEpisode {
+		return LibraryEpisode{Season: season, Episode: episode}
+	}
+	cases := []struct {
+		name string
+		s    LibrarySeries
+		want bool
+	}{
+		// Stored kino.pub type wins, regardless of structure.
+		{"type movie", LibrarySeries{Type: "movie", Episodes: []LibraryEpisode{ep(1, 1)}}, true},
+		{"type documovie", LibrarySeries{Type: "documovie", Episodes: []LibraryEpisode{ep(1, 1), ep(1, 2)}}, true},
+		{"type 4k movie", LibrarySeries{Type: "4k", Episodes: []LibraryEpisode{ep(1, 1)}}, true},
+		{"type serial", LibrarySeries{Type: "serial", Episodes: []LibraryEpisode{ep(1, 1)}}, false},
+		{"type docuserial", LibrarySeries{Type: "docuserial", Episodes: []LibraryEpisode{ep(1, 1)}}, false},
+		{"type tvshow", LibrarySeries{Type: "tvshow", Episodes: []LibraryEpisode{ep(1, 1)}}, false},
+		// No stored type → structural heuristic (legacy downloads).
+		{"legacy single part", LibrarySeries{Episodes: []LibraryEpisode{ep(1, 1)}}, true},
+		{"legacy multi episode", LibrarySeries{Episodes: []LibraryEpisode{ep(1, 1), ep(1, 2)}}, false},
+		{"legacy multi season", LibrarySeries{Episodes: []LibraryEpisode{ep(1, 1), ep(2, 1)}}, false},
+	}
+	for _, c := range cases {
+		if got := isMovieDownload(c.s); got != c.want {
+			t.Errorf("isMovieDownload(%s) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

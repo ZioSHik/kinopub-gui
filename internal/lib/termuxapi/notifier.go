@@ -18,9 +18,20 @@ import (
 // termux-notification --id requires an integer.
 const notificationID = "42314"
 
+// runCmd executes a termux-* command. It is a package-level variable so tests
+// can capture the constructed command name and arguments without invoking the
+// real (Android-only) binaries. The default ignores the run error, matching the
+// fire-and-forget semantics of the notification side effects.
+var runCmd = func(name string, args ...string) {
+	_ = exec.Command(name, args...).Run()
+}
+
+// lookPath is the PATH lookup used by Available; overridable in tests.
+var lookPath = exec.LookPath
+
 // Available reports whether Termux:API tools are present in PATH.
 func Available() bool {
-	_, err := exec.LookPath("termux-notification")
+	_, err := lookPath("termux-notification")
 	return err == nil
 }
 
@@ -120,14 +131,14 @@ func (n *Notifier) Stop() {
 	n.mu.Unlock()
 
 	if done > 0 && done >= total {
-		exec.Command("termux-notification", //nolint:errcheck
+		runCmd("termux-notification",
 			"--id", notificationID,
 			"--title", fmt.Sprintf("✓ %s", title),
 			"--content", fmt.Sprintf("Скачано %d эпизодов", done),
-		).Run()
-		exec.Command("termux-vibrate", "-d", "400").Run() //nolint:errcheck
+		)
+		runCmd("termux-vibrate", "-d", "400")
 	} else {
-		exec.Command("termux-notification-remove", notificationID).Run() //nolint:errcheck
+		runCmd("termux-notification-remove", notificationID)
 	}
 }
 
@@ -183,7 +194,7 @@ func (n *Notifier) refresh() {
 
 	go func() {
 		defer n.notifying.Store(false)
-		exec.Command("termux-notification", //nolint:errcheck
+		runCmd("termux-notification",
 			"--id", notificationID,
 			"--title", titleStr,
 			"--content", content,
@@ -191,12 +202,12 @@ func (n *Notifier) refresh() {
 			"--priority", "low",
 			"--progress-max", "100",
 			"--progress", strconv.Itoa(seriesPct),
-		).Run()
+		)
 	}()
 }
 
 func (n *Notifier) notify(title, content string, pct int) {
-	exec.Command("termux-notification", //nolint:errcheck
+	runCmd("termux-notification",
 		"--id", notificationID,
 		"--title", title,
 		"--content", content,
@@ -204,5 +215,5 @@ func (n *Notifier) notify(title, content string, pct int) {
 		"--priority", "low",
 		"--progress-max", "100",
 		"--progress", strconv.Itoa(pct),
-	).Run()
+	)
 }

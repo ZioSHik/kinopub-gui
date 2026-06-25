@@ -255,9 +255,9 @@ func resealBundle(exePath string) {
 	if runtime.GOOS != "darwin" {
 		return
 	}
-	macOS := filepath.Dir(exePath)        // …/Contents/MacOS
-	contents := filepath.Dir(macOS)       // …/Contents
-	bundle := filepath.Dir(contents)      // …/Foo.app
+	macOS := filepath.Dir(exePath)   // …/Contents/MacOS
+	contents := filepath.Dir(macOS)  // …/Contents
+	bundle := filepath.Dir(contents) // …/Foo.app
 	if filepath.Base(macOS) != "MacOS" || filepath.Base(contents) != "Contents" || !strings.HasSuffix(bundle, ".app") {
 		return
 	}

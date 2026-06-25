@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Download,
   Eye,
+  HardDrive,
   Loader2,
   Mic2,
   Play,
@@ -24,8 +25,37 @@ import { Player } from "./Player";
 
 const QUALITIES = ["", "2160p", "1080p", "720p", "480p", "360p"];
 
+// Last download voiceover choice, remembered across titles/seasons so the same
+// dub is pre-selected next time. Stored as normalized dub names (see normDub).
+const AUDIO_PREF_KEY = "kp.download.audioPref";
+
 function epKey(season: number, episode: number) {
   return `S${season}E${episode}`;
+}
+
+// normDub strips the leading "NN. " index that kino.pub prepends per title (it
+// differs between titles/seasons) so a dub like "02. Дубляж. Невафильм (RUS)"
+// matches the same studio elsewhere. Used to carry the chosen voiceover forward.
+function normDub(label: string): string {
+  return label.replace(/^\s*\d+\.\s*/, "").trim().toLowerCase();
+}
+
+function readAudioPref(): string[] {
+  try {
+    const arr = JSON.parse(localStorage.getItem(AUDIO_PREF_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAudioPref(dubs: string[]) {
+  try {
+    if (dubs.length) localStorage.setItem(AUDIO_PREF_KEY, JSON.stringify(dubs));
+    else localStorage.removeItem(AUDIO_PREF_KEY);
+  } catch {
+    /* storage unavailable — preference just won't persist */
+  }
 }
 
 export function TitleDetail({
@@ -50,6 +80,11 @@ export function TitleDetail({
   const [quality, setQuality] = useState(settings.quality);
   // Selected озвучка labels. Empty set → keep every track.
   const [audioSel, setAudioSel] = useState<Set<string>>(new Set());
+  // True when a remembered voiceover existed but isn't available here, so the
+  // user is prompted to pick another.
+  const [audioPrefMissing, setAudioPrefMissing] = useState(false);
+  // Episode keys already downloaded for this title (key → resolution label).
+  const [downloaded, setDownloaded] = useState<Map<string, string>>(new Map());
   // Selected episode keys (serials). null until detail loads.
   const [epSel, setEpSel] = useState<Set<string> | null>(null);
   const [openSeasons, setOpenSeasons] = useState<Set<number>>(new Set());
@@ -65,6 +100,8 @@ export function TitleDetail({
     setDetail(null);
     setEpSel(null);
     setAudioSel(new Set());
+    setAudioPrefMissing(false);
+    setDownloaded(new Map());
     api
       .discoverItem(id)
       .then((d) => {
@@ -74,12 +111,33 @@ export function TitleDetail({
         const keys = (d.seasons || []).flatMap((s) => s.episodes.map((e) => epKey(e.season, e.episode)));
         setEpSel(new Set(keys));
         setOpenSeasons(new Set((d.seasons || []).map((s) => s.number)));
+        // Default to ALL voiceovers selected (shown highlighted). Carry the last
+        // chosen voiceover forward when it's available: pre-select only those; if
+        // a remembered choice exists but isn't here, keep all selected and flag it.
+        const allLabels = new Set(d.audios.map((a) => a.label));
+        const prefs = readAudioPref();
+        if (prefs.length && d.audios.length) {
+          const matched = d.audios.filter((a) => prefs.includes(normDub(a.label)));
+          if (matched.length) {
+            setAudioSel(new Set(matched.map((a) => a.label)));
+            setAudioPrefMissing(false);
+          } else {
+            setAudioSel(allLabels);
+            setAudioPrefMissing(true);
+          }
+        } else {
+          setAudioSel(allLabels);
+        }
       })
       .catch((e) => alive && setError(e.message || "Failed to load"))
       .finally(() => alive && setLoading(false));
     api
       .discoverSimilar(id)
       .then((r) => alive && setSimilar(r.items || []))
+      .catch(() => {});
+    api
+      .libraryDownloaded(id)
+      .then((r) => alive && setDownloaded(new Map((r.episodes || []).map((e) => [e.key, e.resolution || ""]))))
       .catch(() => {});
     return () => {
       alive = false;
@@ -97,6 +155,10 @@ export function TitleDetail({
       next.has(label) ? next.delete(label) : next.add(label);
       return next;
     });
+
+  const allAudioOn = !!detail && detail.audios.length > 0 && audioSel.size === detail.audios.length;
+  const toggleAllAudio = () =>
+    setAudioSel(() => (allAudioOn ? new Set() : new Set((detail?.audios || []).map((a) => a.label))));
 
   const toggleEpisode = (key: string) =>
     setEpSel((cur) => {
@@ -134,11 +196,30 @@ export function TitleDetail({
       toast(t("Select at least one episode"), "error");
       return;
     }
-    const audioFilter = detail.audios
-      .filter((a) => audioSel.has(a.label))
-      .map((a) => a.filter)
-      .filter(Boolean)
-      .join(",");
+    const chosenAudios = detail.audios.filter((a) => audioSel.has(a.label));
+    if (detail.audios.length > 0 && chosenAudios.length === 0) {
+      toast(t("Select at least one voiceover"), "error");
+      return;
+    }
+    // When every track is selected, send no filter (keep all). Otherwise build an
+    // exact per-track spec so the chosen variant is matched precisely — separating
+    // a plain dub from its AC3 sibling (same studio name). The discriminator is
+    // the CODEC: tagged codecs (AC3/DTS/…) appear verbatim in the HLS track name,
+    // so the entry REQUIRES that token; a plain (AAC/MP3) entry instead FORBIDS the
+    // tagged tokens so it doesn't also match its AC3 sibling.
+    const taggedCodecs = ["ac3", "eac3", "e-ac3", "dts", "dts-hd", "truehd", "true-hd"];
+    const isTagged = (a: { codec?: string }) => taggedCodecs.includes((a.codec || "").toLowerCase());
+    const allSelected = chosenAudios.length === detail.audios.length;
+    const audioSpecs =
+      allSelected || chosenAudios.length === 0
+        ? undefined
+        : chosenAudios.map((a) => {
+            const require = [a.filter].filter(Boolean);
+            if (isTagged(a) && a.codec) require.push(a.codec);
+            return { require, forbid: isTagged(a) ? [] : taggedCodecs };
+          });
+    // Remember this voiceover choice for the next title/season.
+    writeAudioPref(chosenAudios.map((a) => normDub(a.label)));
     const seedTitles = Object.fromEntries(
       (detail.seasons || []).flatMap((s) => s.episodes.map((e) => [epKey(e.season, e.episode), e.title])),
     );
@@ -156,7 +237,8 @@ export function TitleDetail({
         seasons: "",
         episodes: "",
         episodeKeys: isSerial && epSel ? [...epSel] : undefined,
-        audio: audioFilter,
+        audio: "",
+        audioSpecs,
         audioMenu: false,
         force: false,
         noChunked: settings.noChunked,
@@ -216,9 +298,26 @@ export function TitleDetail({
             <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-200">
               <Mic2 className="h-4 w-4 text-gold-400" /> {t("Voiceover")}
               <span className="text-xs font-normal text-slate-500">
-                {audioSel.size === 0 ? t("(all tracks)") : t("({n} selected)", { n: audioSel.size })}
+                {allAudioOn
+                  ? t("(all selected)")
+                  : audioSel.size === 0
+                    ? t("(none)")
+                    : t("({n} selected)", { n: audioSel.size })}
               </span>
+              {detail.audios.length > 1 && (
+                <button
+                  onClick={toggleAllAudio}
+                  className="ml-auto text-xs font-normal text-gold-300 hover:text-gold-200"
+                >
+                  {allAudioOn ? t("Deselect all") : t("Select all")}
+                </button>
+              )}
             </h3>
+            {audioPrefMissing && detail.audios.length > 0 && (
+              <p className="mb-2 text-xs text-gold-300/90">
+                {t("Your last voiceover isn't available here — pick another.")}
+              </p>
+            )}
             {detail.audios.length === 0 ? (
               <p className="text-xs text-slate-500">{t("Voiceover list appears after sign-in / for available titles.")}</p>
             ) : (
@@ -255,6 +354,15 @@ export function TitleDetail({
                   </span>
                 </h3>
                 <div className="flex gap-2 text-xs">
+                  {downloaded.size > 0 && (
+                    <button
+                      className="text-slate-400 hover:text-sky-300"
+                      title={t("Select only episodes not yet downloaded")}
+                      onClick={() => setEpSel(new Set(allEpKeys.filter((k) => !downloaded.has(k))))}
+                    >
+                      {t("Only missing")}
+                    </button>
+                  )}
                   <button className="text-slate-400 hover:text-gold-300" onClick={() => setEpSel(new Set(allEpKeys))}>
                     {t("Select all")}
                   </button>
@@ -268,6 +376,7 @@ export function TitleDetail({
                   const open = openSeasons.has(s.number);
                   const total = s.episodes.length;
                   const watched = s.episodes.filter((e) => e.watched).length;
+                  const dled = s.episodes.filter((e) => downloaded.has(epKey(e.season, e.episode))).length;
                   const sel = s.episodes.filter((e) => epSel.has(epKey(e.season, e.episode))).length;
                   const allSel = total > 0 && sel === total;
                   const someSel = sel > 0 && !allSel;
@@ -296,6 +405,11 @@ export function TitleDetail({
                           {t("Season {n}", { n: s.number })}
                         </button>
                         <span className="flex items-center gap-2 text-xs text-slate-500">
+                          {dled > 0 && (
+                            <span className="inline-flex items-center gap-0.5 text-sky-400/70" title={t("Downloaded")}>
+                              <HardDrive className="h-3 w-3" /> {dled}
+                            </span>
+                          )}
                           {watched > 0 && (
                             <span className="inline-flex items-center gap-0.5 text-emerald-500/70" title={t("Watched")}>
                               <Eye className="h-3 w-3" /> {watched}
@@ -311,6 +425,8 @@ export function TitleDetail({
                           {s.episodes.map((e) => {
                             const key = epKey(e.season, e.episode);
                             const on = epSel.has(key);
+                            const dl = downloaded.has(key);
+                            const dlRes = downloaded.get(key);
                             return (
                               <div
                                 key={key}
@@ -333,6 +449,14 @@ export function TitleDetail({
                                   <span className={`flex-1 truncate ${e.watched ? "text-slate-500" : on ? "text-slate-100" : "text-slate-400"}`}>
                                     {e.title}
                                   </span>
+                                  {dl && (
+                                    <span
+                                      className="shrink-0 text-sky-400/80"
+                                      title={dlRes ? t("Downloaded · {res}", { res: dlRes }) : t("Downloaded")}
+                                    >
+                                      <HardDrive className="h-3.5 w-3.5" />
+                                    </span>
+                                  )}
                                   {e.watched && <Eye className="h-3.5 w-3.5 shrink-0 text-emerald-500/70" />}
                                   {on && <Check className="h-3.5 w-3.5 shrink-0 text-gold-300" />}
                                 </button>

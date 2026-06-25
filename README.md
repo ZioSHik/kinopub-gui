@@ -1,11 +1,13 @@
+<p align="right"><b>Русский</b> · <a href="README.en.md">English</a></p>
+
 # kino.pub downloader · GUI
 
-A polished, self-contained **desktop-grade web interface** for [kino.pub](https://kino.pub) — **browse the whole catalog, preview titles in a built-in player, and download full-fidelity video** (every audio track, every subtitle, whole multi-season series) with live per-episode progress.
+Аккуратный, самодостаточный **веб-интерфейс десктоп-класса** для [kino.pub](https://kino.pub) — **просматривайте весь каталог, смотрите превью во встроенном плеере и скачивайте видео без потерь качества** (все аудиодорожки, все субтитры, целые многосезонные сериалы) с живым прогрессом по каждому эпизоду.
 
-It talks to the **official kino.pub API** (the same one the Kodi/Android apps use): you sign in once with a short device code — no cookies, no Cloudflare wrangling, no browser scraping. Under the hood it drives a battle-tested Go download engine, so progress is real and structured (speed, ETA, per-track bars) instead of scraped terminal output. Ships as **one binary** — a Go server with the React UI embedded (`go:embed`) — run it and a browser tab opens. No Electron, no Node at runtime.
+Работает через **официальный API kino.pub** (тот же, что используют приложения для Kodi и Android): вы один раз входите по короткому коду устройства — без cookie, без возни с Cloudflare, без скрейпинга страниц. Внутри — проверенный движок загрузки на Go, поэтому прогресс настоящий и структурированный (скорость, оставшееся время, прогресс по каждой дорожке), а не разобранный вывод терминала. Поставляется **одним бинарником** — Go-сервер со встроенным React-интерфейсом (`go:embed`): запускаете — и открывается вкладка браузера. Без Electron, без Node во время работы.
 
 <p align="center">
-  <img src="docs/screenshots/download-page.png" alt="kino.pub downloader" width="900">
+  <img src="docs/screenshots/catalog.png" alt="kino.pub downloader" width="900">
 </p>
 
 <p align="center">
@@ -18,91 +20,100 @@ It talks to the **official kino.pub API** (the same one the Kodi/Android apps us
 
 ---
 
-## Highlights
+## Возможности
 
-- 🎬 **Catalog browser** — search, tops, collections (подборки), genre/country filters, year and IMDb/Kinopoisk rating ranges, your watch history and "continue watching", and per-title detail with plot, cast, ratings and the full season/episode tree.
-- ▶️ **Built-in player** — preview any title in-app (HLS) before you commit to a download, streamed through a same-origin proxy so it just works without CORS or VPN gymnastics in the browser.
-- 🎬 **Full-fidelity downloads** — every audio track, every subtitle, whole multi-season series — picked from the catalog or pasted as a direct link.
-- ⚡ **Real-time progress over SSE** — per-episode and per-audio-track percentage, download speed, ETA, byte/segment counts, and the engine's smart deferred-retry state, all live.
-- 🔊 **Interactive audio picker** — choose which dubs/озвучки to keep, generalized across episodes, as a proper modal — or filter with a pattern.
-- 🩺 **Doctor** — verify downloads against the state file and repair inconsistencies, with a readable report.
-- 📚 **Library** — browse what you've already downloaded, with sizes, resolutions and missing-file detection; open a finished file or reveal its folder.
-- 🔐 **Sign in once** — a short device-code login against the official kino.pub API; tokens are stored encrypted and machine-bound. Local features (Library, Doctor, Settings) work without signing in.
-- 🌍 **Bilingual** — English & Russian, switchable in one click (remembered between sessions).
-- 📦 **Single binary** — the UI is embedded; self-updates from GitHub releases.
+- 🎬 **Просмотр каталога** — поиск, топы, подборки, фильтры по жанру и стране, диапазоны по году и рейтингу IMDb/Кинопоиск, ваша история просмотров и «продолжить просмотр», а также страница тайтла с описанием, актёрами, рейтингами и полным деревом сезонов и эпизодов.
+- ▶️ **Встроенный плеер** — посмотрите превью любого тайтла прямо в приложении (HLS), прежде чем качать; поток идёт через same-origin прокси, поэтому всё работает без плясок с CORS и VPN в браузере.
+- 🎬 **Загрузка без потерь** — все аудиодорожки, все субтитры, целые многосезонные сериалы — выбранные из каталога или вставленные прямой ссылкой.
+- ⚡ **Прогресс в реальном времени по SSE** — проценты по каждому эпизоду и каждой аудиодорожке, скорость загрузки, оставшееся время, счётчики байтов и сегментов и состояние умных отложенных повторов движка — всё вживую.
+- 🔊 **Интерактивный выбор аудио** — выберите, какие озвучки оставить (обобщённо по всем эпизодам), в удобном модальном окне — или отфильтруйте по шаблону.
+- 🩺 **Доктор** — проверяет загрузки по файлу состояния и исправляет несоответствия, с понятным отчётом.
+- 📚 **Библиотека** — просматривайте уже скачанное с размерами, разрешениями и обнаружением пропавших файлов; откройте готовый файл или покажите его папку.
+- 🔐 **Вход один раз** — авторизация по короткому коду устройства через официальный API kino.pub; токены хранятся в зашифрованном виде и привязаны к машине. Локальные функции (Библиотека, Доктор, Настройки) работают и без входа.
+- 🌍 **Два языка** — английский и русский, переключаются в один клик (запоминается между сессиями).
+- 📦 **Один бинарник** — интерфейс встроен внутрь; самообновление из релизов на GitHub.
 
-## Screenshots
+## Скриншоты
 
-| Catalog → download | Live queue |
+| Просмотр каталога | Очередь вживую |
 | --- | --- |
-| ![Download](docs/screenshots/download-page.png) | ![Queue](docs/screenshots/queue-dryrun.png) |
+| ![Каталог](docs/screenshots/catalog.png) | ![Очередь](docs/screenshots/queue.png) |
 
-| Doctor | Settings |
+| Доктор | Настройки |
 | --- | --- |
-| ![Doctor](docs/screenshots/doctor-page.png) | ![Settings](docs/screenshots/settings-page.png) |
+| ![Доктор](docs/screenshots/doctor.png) | ![Настройки](docs/screenshots/settings.png) |
 
 ---
 
-## Requirements
+## Требования
 
-- **ffmpeg** on your `PATH` (used to mux video + audio + subtitles). The UI shows a green/red indicator for `ffmpeg` and `ffprobe`.
+- **ffmpeg** в `PATH` (нужен, чтобы собрать видео + аудио + субтитры). Интерфейс показывает зелёный/красный индикатор для `ffmpeg` и `ffprobe`.
   ```bash
   brew install ffmpeg          # macOS
   sudo apt install ffmpeg      # Debian/Ubuntu
   ```
   ```powershell
-  winget install Gyan.FFmpeg   # Windows (or: choco install ffmpeg / scoop install ffmpeg)
+  winget install Gyan.FFmpeg   # Windows (или: choco install ffmpeg / scoop install ffmpeg)
   ```
-  On Windows, make sure `ffmpeg.exe` and `ffprobe.exe` are on your `PATH` (the package managers above do this) — the Settings page confirms both are found.
+  На Windows убедитесь, что `ffmpeg.exe` и `ffprobe.exe` есть в `PATH` (менеджеры пакетов выше делают это сами) — страница «Настройки» подтвердит, что оба найдены.
 
-  **Or just let the app install it:** if ffmpeg is missing, **Settings → System → Install ffmpeg** (and the button on the Download page) downloads a static ffmpeg/ffprobe build for your platform into the app's config dir and uses it automatically — no system install or admin rights needed.
-- A modern browser (the app opens in your default one).
-- A kino.pub account with an active subscription (for catalog, streaming and downloads).
+  **Или пусть приложение установит сам:** если ffmpeg не найден, **Настройки → Система → Установить ffmpeg** (а также кнопка на странице «Загрузка») скачает статичную сборку ffmpeg/ffprobe под вашу платформу в конфигурационную папку приложения и будет использовать её автоматически — без установки в систему и без прав администратора.
+- Современный браузер (приложение открывается в браузере по умолчанию).
+- Аккаунт kino.pub с активной подпиской (для каталога, стриминга и загрузок).
 
-## Install & run
+## Установка и запуск
 
-### Option A — download a release binary
+**Готовые клиенты под все основные системы** — берите со [страницы релизов](https://github.com/ZioSHik/kinopub-gui/releases):
 
-Grab `kinopub-gui-*` for your platform from the [releases page](https://github.com/ZioSHik/kinopub-gui/releases), then run it:
+- 🍎 **macOS** — приложение в строке меню (`.dmg`) и отдельные бинарники, Apple Silicon (`arm64`) и Intel (`amd64`)
+- 🪟 **Windows** — исполняемый файл `x64` (`amd64`), без окна консоли и с встроенной иконкой
+- 🐧 **Linux** — `x64` (`amd64`, с иконкой в системном трее; также `AppImage`) и `ARM64`
+- 🤖 **Android** — `ARM64` (без системного трея, веб-интерфейс как обычно; запускается под Termux)
+
+Везде один и тот же бинарник — React-интерфейс встроен внутрь, так что больше ничего ставить не нужно.
+
+### Вариант A — скачать готовый бинарник
+
+Возьмите `kinopub-gui-*` под вашу платформу со [страницы релизов](https://github.com/ZioSHik/kinopub-gui/releases) и запустите:
 
 ```bash
 chmod +x kinopub-gui-darwin-arm64
 ./kinopub-gui-darwin-arm64
-# → opens http://127.0.0.1:8765 in your browser
+# → откроет http://127.0.0.1:8765 в браузере
 ```
 
-On **macOS** you can instead grab the `.dmg` and drag **KinoPub** to Applications — it runs as a menu-bar app (no Dock icon; the status-bar item has *Open* and *Quit*).
+На **macOS** можно вместо этого взять `.dmg` и перетащить **KinoPub** в Applications — приложение живёт в строке меню (без иконки в Dock; в пункте строки состояния есть *Open* и *Quit*).
 
-On **Windows**, unzip `kinopub-gui-windows-amd64.zip` and run the executable (double-click or from a terminal):
+На **Windows** распакуйте `kinopub-gui-windows-amd64.zip` и запустите исполняемый файл (двойным щелчком или из терминала):
 
 ```powershell
 .\kinopub-gui-windows-amd64.exe
-# → opens http://127.0.0.1:8765 in your browser
+# → откроет http://127.0.0.1:8765 в браузере
 ```
 
-> The binary is unsigned, so SmartScreen / Gatekeeper may warn on first run — on Windows choose **More info → Run anyway**; on macOS right-click → **Open**. Windows Firewall may also prompt; the server only listens on loopback, so allowing private-network access is enough. Credentials are stored encrypted at `~/.config/kinopub/credentials.enc` (`%USERPROFILE%\.config\kinopub\credentials.enc` on Windows).
+> Бинарник не подписан, поэтому при первом запуске SmartScreen / Gatekeeper может предупредить — на Windows выберите **Подробнее → Выполнить в любом случае**, на macOS правый клик → **Открыть**. Брандмауэр Windows тоже может спросить; сервер слушает только loopback, поэтому достаточно разрешить доступ в частной сети. Учётные данные хранятся в зашифрованном виде в `~/.config/kinopub/credentials.enc` (`%USERPROFILE%\.config\kinopub\credentials.enc` на Windows).
 
-### Option B — build from source
+### Вариант B — сборка из исходников
 
-You need Go 1.26+ and Node 20+ (only to build the UI; not at runtime).
+Понадобятся Go 1.26+ и Node 20+ (только для сборки интерфейса; во время работы не нужны).
 
 ```bash
 git clone https://github.com/ZioSHik/kinopub-gui
 cd kinopub-gui
-make run          # builds the web UI, builds the GUI binary, and launches it
+make run          # собирает веб-интерфейс, бинарник GUI и запускает его
 ```
 
-Or step by step:
+Или по шагам:
 
 ```bash
-make web          # build the React frontend into web/dist (embedded via go:embed)
-make gui          # build the ./kinopub-gui binary
+make web          # собрать React-фронтенд в web/dist (встраивается через go:embed)
+make gui          # собрать бинарник ./kinopub-gui
 ./kinopub-gui
 ```
 
-> **Distribution:** grab the prebuilt release binaries above, use `make`, or install from source with `go install github.com/ZioSHik/kinopub-gui/cmd/kinopub-gui@latest` — the module path matches this repo and the embedded `web/dist` is committed, so the install produces a complete, runnable binary. A plain `go build ./cmd/kinopub-gui` also works; `web/dist` is committed, and `make web` regenerates it.
+> **Распространение:** возьмите готовые релизные бинарники выше, используйте `make` или установите из исходников через `go install github.com/ZioSHik/kinopub-gui/cmd/kinopub-gui@latest` — путь модуля совпадает с этим репозиторием, а встроенный `web/dist` закоммичен, поэтому установка даёт готовый к запуску бинарник. Обычный `go build ./cmd/kinopub-gui` тоже работает; `web/dist` закоммичен, а `make web` пересобирает его.
 
-### Flags
+### Флаги
 
 ```
 kinopub-gui [flags]
@@ -112,68 +123,68 @@ kinopub-gui [flags]
   -version   print version and exit
 ```
 
-The server binds to `127.0.0.1` only — it is a local control panel, not a public service. Every request is additionally checked for a loopback `Host` (defeating DNS-rebinding) and a same-origin `Origin` (defeating a malicious page's cross-site fetch).
+Сервер слушает только `127.0.0.1` — это локальная панель управления, а не публичный сервис. Каждый запрос дополнительно проверяется на loopback-`Host` (защита от DNS-rebinding) и same-origin `Origin` (защита от кросс-сайтового запроса вредоносной страницы).
 
-### Updating
+### Обновление
 
-Release binaries self-update: **Settings → Software update** shows the current
-version and, when a newer GitHub release exists, an **Update & restart** button.
-It downloads the binary for your platform, verifies its SHA-256 against the
-release `checksums.txt`, replaces the running executable in place, and restarts —
-the open browser tab reconnects automatically. (Builds from source report as
-`dev` and don't self-update; rebuild with `make`.)
-
----
-
-## Using it
-
-### 1. Sign in
-
-Local features — **Library, Doctor, Settings, the folder picker** — work without signing in. The catalog, search, the in-app player and downloads need an account.
-
-Click **Sign in** (top-right or in the sidebar) and:
-
-1. The app shows a short **device code** and a link (`kino.pub/device`).
-2. Open that link in any browser where you're logged into kino.pub and enter the code.
-3. Confirm — the app detects it within a couple of seconds and you're in.
-
-The device shows up in your kino.pub account's device list as `kinopub-gui (your-hostname)`. Tokens are encrypted with AES-256-GCM, bound to your machine, and stored at `~/.config/kinopub/credentials.enc`. Sign out any time from Settings.
-
-> **kino.pub is often unavailable without a VPN.** If sign-in, the catalog or downloads hang or time out, enable a VPN or set a proxy (Settings → Proxy, or per-download in Advanced options). The UI shows a reminder and detects timeouts.
-
-### 2. Find something
-
-Open **Catalog** to search and browse. Filter by type, genre, country, year range and IMDb/Kinopoisk rating; browse tops and collections; or jump back into your **history** and **continue-watching** rows. Open a title to see its details, ratings, available озвучки and the full season/episode tree — and hit ▶ to **preview it in the built-in player** before downloading.
-
-You can also paste a kino.pub link directly on the **Download** page if you already have one.
-
-### 3. Download
-
-From a title's detail view (or the Download page), tick the seasons/episodes you want, choose quality/container, and **Start download**. Live progress appears under **Queue** — overall, per-episode, and (for HLS sources) per audio/video track, with speed and ETA.
-
-Download options mirror the engine's full feature set: quality, container, season/episode selection, audio filters, proxy (HTTP/HTTPS/SOCKS5), concurrency, retries, throttling, `--no-chunked`, and custom ffmpeg args.
-
-### 4. Audio tracks
-
-By default every audio track is kept. To keep only some:
-
-- type a pattern in **Audio tracks** (e.g. `anilibria`, `!jpn`, `anilibria,!jpn` — `!`/`-` excludes), or
-- enable **Interactive audio menu** and pick tracks in the modal when the download starts.
-
-Matching is substring + language based and case-insensitive, so a dub labelled `01. Многоголосый. AniLibria (RUS)` in one episode and `02. AniLibria` in another both match `anilibria`. If a chosen dub is missing from some episode, the engine falls back to another track in the same language.
-
-### 5. Doctor & Library
-
-- **Doctor** verifies files against the state file (missing, truncated, duration-mismatch, orphan `.tmp`) and can repair them (`--fix`, `--clean-tmp`). It reuses the exact same resolution pipeline as a download, so duration checks compare against the real source.
-- **Library** scans your output folders for `.kinopub-state.json` files and lists everything you've downloaded, flagging files that have gone missing on disk. Open or reveal any file straight from the list.
-
-### 6. Settings
-
-Defaults for new downloads (output folder, quality, container, concurrency, retries, throttle, proxy, no-chunked) plus extra folders to scan in the Library, the kino.pub sign-in, the ffmpeg installer and the software updater. Stored at `~/.config/kinopub/gui.json`.
+Релизные бинарники обновляются сами: **Настройки → Обновление ПО** показывает текущую
+версию и, если на GitHub есть более новый релиз, кнопку **Обновить и перезапустить**.
+Она скачивает бинарник под вашу платформу, проверяет его SHA-256 по `checksums.txt`
+из релиза, заменяет работающий исполняемый файл на месте и перезапускается —
+открытая вкладка браузера переподключается сама. (Сборки из исходников отображаются
+как `dev` и не самообновляются; пересоберите через `make`.)
 
 ---
 
-## How it works
+## Как пользоваться
+
+### 1. Вход
+
+Локальные функции — **Библиотека, Доктор, Настройки, выбор папки** — работают без входа. Каталог, поиск, встроенный плеер и загрузки требуют аккаунт.
+
+Нажмите **Войти** (вверху справа или в боковой панели) и:
+
+1. Приложение покажет короткий **код устройства** и ссылку (`kino.pub/device`).
+2. Откройте эту ссылку в любом браузере, где вы залогинены в kino.pub, и введите код.
+3. Подтвердите — приложение распознает это за пару секунд, и вы внутри.
+
+Устройство появится в списке устройств вашего аккаунта kino.pub как `kinopub-gui (имя-вашего-хоста)`. Токены шифруются AES-256-GCM, привязаны к вашей машине и хранятся в `~/.config/kinopub/credentials.enc`. Выйти можно в любой момент из «Настроек».
+
+> **kino.pub часто недоступен без VPN.** Если вход, каталог или загрузки зависают или отваливаются по таймауту, включите VPN или укажите прокси (Настройки → Прокси либо для конкретной загрузки в «Дополнительно»). Интерфейс показывает напоминание и определяет таймауты.
+
+### 2. Найти что-нибудь
+
+Откройте **Каталог**, чтобы искать и просматривать. Фильтруйте по типу, жанру, стране, диапазону лет и рейтингу IMDb/Кинопоиск; смотрите топы и подборки; или возвращайтесь к строкам **истории** и **продолжить просмотр**. Откройте тайтл, чтобы увидеть детали, рейтинги, доступные озвучки и полное дерево сезонов и эпизодов — и нажмите ▶, чтобы **посмотреть превью во встроенном плеере** перед загрузкой.
+
+Также можно вставить ссылку kino.pub прямо на странице **Загрузка**, если она у вас уже есть.
+
+### 3. Загрузка
+
+Из страницы тайтла (или со страницы «Загрузка») отметьте нужные сезоны и эпизоды, выберите качество и контейнер и нажмите **Начать загрузку**. Живой прогресс появляется в **Очереди** — общий, по каждому эпизоду и (для HLS-источников) по каждой аудио/видео-дорожке, со скоростью и оставшимся временем.
+
+Параметры загрузки повторяют весь набор возможностей движка: качество, контейнер, выбор сезонов и эпизодов, фильтры аудио, прокси (HTTP/HTTPS/SOCKS5), параллелизм, повторы, ограничение скорости, `--no-chunked` и собственные аргументы ffmpeg.
+
+### 4. Аудиодорожки
+
+По умолчанию сохраняются все аудиодорожки. Чтобы оставить только некоторые:
+
+- введите шаблон в поле **Аудиодорожки** (например, `anilibria`, `!jpn`, `anilibria,!jpn` — `!`/`-` исключают), или
+- включите **Интерактивное меню аудио** и выберите дорожки в модальном окне при старте загрузки.
+
+Сопоставление работает по подстроке и языку и без учёта регистра, поэтому озвучка с подписью `01. Многоголосый. AniLibria (RUS)` в одном эпизоде и `02. AniLibria` в другом обе попадут под `anilibria`. Если выбранной озвучки нет в каком-то эпизоде, движок берёт другую дорожку на том же языке.
+
+### 5. Доктор и Библиотека
+
+- **Доктор** проверяет файлы по файлу состояния (отсутствует, обрезан, несовпадение размера, неполная запись, осиротевший `.tmp`) и может их чинить (`--fix`, `--clean-tmp`). Он проверяет наличие файла и записанный размер на диске — быстрый офлайн-проход без обращения к сети.
+- **Библиотека** сканирует ваши папки вывода на файлы `.kinopub-state.json` и показывает всё скачанное, отмечая файлы, пропавшие с диска. Откройте или покажите любой файл прямо из списка.
+
+### 6. Настройки
+
+Значения по умолчанию для новых загрузок (папка вывода, качество, контейнер, параллелизм, повторы, ограничение скорости, прокси, no-chunked), а также дополнительные папки для сканирования в Библиотеке, вход в kino.pub, установщик ffmpeg и обновление ПО. Хранятся в `~/.config/kinopub/gui.json`.
+
+---
+
+## Как это устроено
 
 ```
 ┌──────────────────────────────┐        SSE (live progress)        ┌───────────────────────┐
@@ -189,52 +200,52 @@ Defaults for new downloads (output folder, quality, container, concurrency, retr
                                                           └───────────────────┘   └───────────────────┘
 ```
 
-The GUI implements the engine's own seams instead of shelling out to anything:
+GUI реализует собственные точки расширения (seams) движка, ничего не вызывая через shell:
 
-- a `domain.ProgressReporter` (plus the optional `ByteProgressSink` / `SegmentProgressSink` / `HLSProgressSink` and the `EpisodeDeferred` hook) that turns engine callbacks into SSE events;
-- a `domain.AudioChooser` that surfaces the interactive picker to the browser and blocks until you answer;
-- a `logx.Handler` that streams engine log lines into each job's log view.
+- `domain.ProgressReporter` (плюс необязательные `ByteProgressSink` / `SegmentProgressSink` / `HLSProgressSink` и хук `EpisodeDeferred`), который превращает колбэки движка в SSE-события;
+- `domain.AudioChooser`, который выводит интерактивный выбор в браузер и блокируется до вашего ответа;
+- `logx.Handler`, который транслирует строки лога движка в лог каждой задачи.
 
-Discovery and streaming go through `internal/services/kinopubapi`, a small client for the official kino.pub JSON API: it manages the OAuth2 device-code login and transparently refreshes the (rotating) token set. The in-app player streams HLS through `/api/hls`, a same-origin proxy whose every URL is HMAC-signed by a per-process key, so it can never be used as an open proxy.
+Обнаружение контента и стриминг идут через `internal/services/kinopubapi` — небольшой клиент официального JSON API kino.pub: он управляет входом по OAuth2 device-code и прозрачно обновляет (ротируемый) набор токенов. Встроенный плеер отдаёт HLS через `/api/hls` — same-origin прокси, каждый URL которого подписан HMAC ключом, уникальным для процесса, поэтому его нельзя использовать как открытый прокси.
 
-### Project layout
+### Структура проекта
 
 ```
 cmd/
-  kinopub-gui/      GUI server entrypoint (embeds the UI, opens the browser, macOS/Windows tray)
+  kinopub-gui/      входная точка GUI-сервера (встраивает UI, открывает браузер, трей для macOS/Windows)
 internal/
-  app/kinopub/      engine composition root (App.Run)
-  domain/           ports & models
+  app/kinopub/      корень композиции движка (App.Run)
+  domain/           порты и модели
   services/
-    kinopubapi/     official kino.pub API client (device login, discovery, stream resolution)
-    downloader/     HLS + file download, ffmpeg muxing
-    hlsdownloader/  HLS manifest parsing & segment download
-    doctor/         verify & repair downloads
-    statestore/     per-series .kinopub-state.json
+    kinopubapi/     клиент официального API kino.pub (вход устройства, обнаружение, разрешение потока)
+    downloader/     загрузка HLS + файлов, сборка через ffmpeg
+    hlsdownloader/  разбор HLS-манифестов и загрузка сегментов
+    doctor/         проверка и починка загрузок
+    statestore/     .kinopub-state.json по каждому сериалу
     …               outputlayout, scheduler, progress, proxyprovider
-  gui/              REST + SSE server, job manager, discovery, HLS player proxy, reporter/chooser
-  lib/              credstore (encrypted creds), httpx (uTLS), logx, audiomenu, …
-web/                React + Vite + Tailwind frontend
-  dist/             built UI, embedded into the binary (go:embed)
+  gui/              REST + SSE сервер, менеджер задач, обнаружение, HLS-прокси плеера, reporter/chooser
+  lib/              credstore (шифр. учётки), httpx (uTLS), logx, audiomenu, …
+web/                фронтенд React + Vite + Tailwind
+  dist/             собранный UI, встроенный в бинарник (go:embed)
 ```
 
-## Development
+## Разработка
 
 ```bash
-# Terminal 1 — run the Go server (serves the embedded UI + API)
+# Терминал 1 — запустить Go-сервер (раздаёт встроенный UI + API)
 make gui && ./kinopub-gui
 
-# Terminal 2 — hot-reloading frontend with API proxy to :8765
+# Терминал 2 — фронтенд с горячей перезагрузкой и прокси API на :8765
 make dev            # → http://localhost:5173
 ```
 
-`make vet` runs `go vet`, `make test` runs the test suite. CI builds the UI, vets, and runs the suite (including the race detector) on Linux, Windows and macOS.
+`make vet` запускает `go vet`, `make test` — набор тестов. CI собирает интерфейс, прогоняет vet и тесты (включая детектор гонок) на Linux, Windows и macOS.
 
-## Credits
+## Благодарности
 
-- The download engine and the hard parts it grew from (HLS, retries, encrypted creds, doctor): **[niazlv/kinopub-downloader](https://github.com/niazlv/kinopub-downloader)**.
-- The web interface, the official-API catalog/player integration, and the packaging (`cmd/kinopub-gui`, `internal/gui`, `internal/services/kinopubapi`, `web/`): this project.
+- Движок загрузки и сложные части, из которых он вырос (HLS, повторы, шифрование учётных данных, доктор): **[niazlv/kinopub-downloader](https://github.com/niazlv/kinopub-downloader)**.
+- Веб-интерфейс, интеграция каталога/плеера через официальный API и упаковка (`cmd/kinopub-gui`, `internal/gui`, `internal/services/kinopubapi`, `web/`): этот проект.
 
-## License
+## Лицензия
 
-MIT — see [LICENSE](LICENSE). The upstream engine is MIT-licensed; this repository preserves that license and adds the GUI under the same terms.
+MIT — см. [LICENSE](LICENSE). Вышестоящий движок под лицензией MIT; этот репозиторий сохраняет её и добавляет GUI на тех же условиях.

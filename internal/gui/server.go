@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 )
 
@@ -80,6 +81,17 @@ func NewServer(version string, static fs.FS) *Server {
 		hlsKey:   randomKey(32),
 		hlsSem:   make(chan struct{}, 4),
 	}
+	// Teach the scheduler how to launch a job: resolve the single shared API
+	// client (nil when not signed in → run() fails the job with a clear message)
+	// and start the run goroutine. Sharing one client across discovery and every
+	// download serializes refresh-token rotations through its mutex (kino.pub
+	// invalidates the old token on each refresh, so independent clients would
+	// lock the account out).
+	s.mgr.startFn = func(j *Job) {
+		apiClient, _ := s.kpClient()
+		go s.mgr.run(context.Background(), j, j.cfg, j.seedTitles, j.title, j.posterURL, apiClient)
+	}
+	s.mgr.setMaxActive(s.settings.get().MaxActiveJobs)
 	s.routes()
 	return s
 }
@@ -179,6 +191,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/discover/item", s.handleDiscoverItem)
 	mux.HandleFunc("GET /api/discover/similar", s.handleDiscoverSimilar)
 	mux.HandleFunc("GET /api/discover/stream", s.handleDiscoverStream)
+	mux.HandleFunc("POST /api/discover/marktime", s.handleDiscoverMarkTime)
 	mux.HandleFunc("GET /api/hls", s.handleHLSProxy)
 
 	mux.HandleFunc("GET /api/ffmpeg", s.handleFFmpeg)
@@ -200,10 +213,19 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleGetJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleDeleteJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancelJob)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.handleRetryJob)
+	mux.HandleFunc("POST /api/jobs/{id}/retry-episode", s.handleRetryEpisode)
+	mux.HandleFunc("POST /api/jobs/{id}/prioritize", s.handlePrioritizeJob)
+	mux.HandleFunc("POST /api/jobs/{id}/prioritize-episode", s.handlePrioritizeEpisode)
+	mux.HandleFunc("POST /api/jobs/{id}/pause", s.handlePauseJob)
+	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResumeJob)
+	mux.HandleFunc("POST /api/jobs/{id}/pause-episode", s.handlePauseEpisode)
+	mux.HandleFunc("POST /api/jobs/{id}/resume-episode", s.handleResumeEpisode)
 	mux.HandleFunc("POST /api/jobs/{id}/audio", s.handleAudioAnswer)
 
 	mux.HandleFunc("POST /api/doctor", s.handleDoctor)
 	mux.HandleFunc("GET /api/library", s.handleLibrary)
+	mux.HandleFunc("GET /api/library/downloaded", s.handleLibraryDownloaded)
 	mux.HandleFunc("POST /api/library/delete", s.handleDeleteLibrary)
 	mux.HandleFunc("POST /api/library/delete-episode", s.handleDeleteLibraryEpisode)
 	mux.HandleFunc("POST /api/open", s.handleOpenPath)
@@ -371,7 +393,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.invalidateKPClient() // proxy may have changed → rebuild the client
+	s.mgr.setMaxActive(saved.MaxActiveJobs) // apply new concurrency limit (may dispatch queued jobs)
+	s.invalidateKPClient()                  // proxy may have changed → rebuild the client
 	s.hub.broadcast(Event{Type: "settings", Data: saved})
 	writeJSON(w, http.StatusOK, saved)
 }
@@ -434,25 +457,199 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	job := newJob(s.mgr.nextID(), cfg.InputURL, cfg)
-	if req.SeedTitle != "" {
-		job.title = req.SeedTitle
-	}
-	if req.SeedPoster != "" {
-		job.posterURL = req.SeedPoster
-	}
-	s.mgr.add(job)
-	s.mgr.publishNow(job)
-
-	// Resolve the single shared API client up front; nil when not signed in, in
-	// which case run() fails the job with a clear message. Sharing one client
-	// across discovery and every download run keeps all refresh-token rotations
-	// serialized through its mutex (kino.pub invalidates the old token on each
-	// refresh, so independent clients would lock the account out).
-	apiClient, _ := s.kpClient()
-	go s.mgr.run(context.Background(), job, cfg, req.SeedTitles, req.SeedTitle, req.SeedPoster, apiClient)
-
+	job := s.launchJob(cfg, req.SeedTitle, req.SeedPoster, req.SeedTitles, false)
 	writeJSON(w, http.StatusAccepted, job.snapshot())
+}
+
+// launchJob creates a job from a resolved config plus seed metadata, registers
+// it, and submits it to the scheduler. Shared by create and retry. Callers must
+// validate cfg.InputURL and ffmpeg availability before calling. front=true puts
+// the job at the head of the wait queue (per-episode retries jump the line).
+func (s *Server) launchJob(cfg domain.RunConfig, title, poster string, seedTitles map[string]string, front bool) *Job {
+	job := newJob(s.mgr.nextID(), cfg.InputURL, cfg)
+	if title != "" {
+		job.title = title
+	}
+	if poster != "" {
+		job.posterURL = poster
+	}
+	job.seedTitles = seedTitles
+	// Hand the job to the global scheduler: it dispatches immediately if a slot
+	// is free (or the limit is unlimited), otherwise the job waits as "queued"
+	// until a running download finishes. startFn (set in NewServer) launches the
+	// run goroutine.
+	s.mgr.submit(job, front)
+	return job
+}
+
+// handleRetryJob re-runs a finished job IN PLACE (same card): the engine skips
+// episodes already marked complete in the state store, so only the failed or
+// never-started episodes are downloaded again. No new job is created.
+func (s *Server) handleRetryJob(w http.ResponseWriter, r *http.Request) {
+	src, ok := s.mgr.get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "job not found")
+		return
+	}
+	src.mu.Lock()
+	running := !src.finished() && src.status != statusPaused
+	cfg := src.cfg
+	src.mu.Unlock()
+	if running {
+		writeErr(w, http.StatusConflict, "job is still running")
+		return
+	}
+	if cfg.InputURL == "" {
+		writeErr(w, http.StatusBadRequest, "this job cannot be retried")
+		return
+	}
+	if !cfg.DryRun {
+		if _, lookErr := exec.LookPath(cfg.FFmpegPath); lookErr != nil {
+			writeErr(w, http.StatusPreconditionFailed, "ffmpeg not found on PATH — install ffmpeg to download")
+			return
+		}
+	}
+	if !s.mgr.rerunJob(r.PathValue("id")) {
+		writeErr(w, http.StatusConflict, "job cannot be retried")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleRetryEpisode retries a single episode IN PLACE — no new job card. If the
+// job is still running, the failed episode is re-queued live into the same run
+// (its siblings keep downloading). If the job has finished, the whole job is
+// re-run, which re-attempts every not-yet-completed episode (the engine skips
+// the completed ones), so retrying several failed episodes never spawns a pile
+// of new jobs.
+func (s *Server) handleRetryEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Season  int `json:"season"`
+		Episode int `json:"episode"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	src, ok := s.mgr.get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "job not found")
+		return
+	}
+	src.mu.Lock()
+	live := src.status == statusRunning || src.status == statusResolving
+	cfg := src.cfg
+	src.mu.Unlock()
+	if cfg.InputURL == "" {
+		writeErr(w, http.StatusBadRequest, "this job cannot be retried")
+		return
+	}
+	key := domain.EpisodeKey{Season: body.Season, Episode: body.Episode}
+
+	if live {
+		// Re-queue into the running engine — no new card.
+		if !s.mgr.retryEpisodeLive(r.PathValue("id"), key) {
+			writeErr(w, http.StatusConflict, "episode cannot be retried")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	// Finished/paused/queued job → re-run it in place but scoped to JUST this
+	// episode, so retrying one episode re-downloads only that one (not every
+	// not-yet-completed episode). The card is reused — no new job is created.
+	if !cfg.DryRun {
+		if _, lookErr := exec.LookPath(cfg.FFmpegPath); lookErr != nil {
+			writeErr(w, http.StatusPreconditionFailed, "ffmpeg not found on PATH — install ffmpeg to download")
+			return
+		}
+	}
+	if !s.mgr.rerunJobEpisode(r.PathValue("id"), key) {
+		writeErr(w, http.StatusConflict, "episode cannot be retried")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePrioritizeEpisode promotes a single episode to the front of a running
+// job's download queue, so it starts next instead of in selection order.
+func (s *Server) handlePrioritizeEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Season  int `json:"season"`
+		Episode int `json:"episode"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.mgr.prioritizeEpisode(r.PathValue("id"), domain.EpisodeKey{Season: body.Season, Episode: body.Episode}) {
+		writeErr(w, http.StatusConflict, "episode cannot be prioritized — the job is not running")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePrioritizeJob moves a queued (not-yet-started) job to the front of the
+// global download queue so it is dispatched before other waiting jobs.
+func (s *Server) handlePrioritizeJob(w http.ResponseWriter, r *http.Request) {
+	if !s.mgr.prioritizeJob(r.PathValue("id")) {
+		writeErr(w, http.StatusConflict, "job cannot be prioritized — it is not waiting in the queue")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePauseJob pauses a whole download: a queued job is held out of dispatch, a
+// running one is stopped with its partial progress preserved for a later resume.
+func (s *Server) handlePauseJob(w http.ResponseWriter, r *http.Request) {
+	if !s.mgr.pauseJob(r.PathValue("id")) {
+		writeErr(w, http.StatusConflict, "job cannot be paused — it is already finished or paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleResumeJob resumes a paused download, continuing from where it stopped.
+func (s *Server) handleResumeJob(w http.ResponseWriter, r *http.Request) {
+	if !s.mgr.resumeJob(r.PathValue("id")) {
+		writeErr(w, http.StatusConflict, "job cannot be resumed — it is not paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePauseEpisode holds a single not-yet-started episode of a running job.
+func (s *Server) handlePauseEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Season  int `json:"season"`
+		Episode int `json:"episode"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.mgr.pauseEpisode(r.PathValue("id"), domain.EpisodeKey{Season: body.Season, Episode: body.Episode}) {
+		writeErr(w, http.StatusConflict, "episode cannot be paused — it is not waiting in this running job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleResumeEpisode releases a paused episode back into its running job.
+func (s *Server) handleResumeEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Season  int `json:"season"`
+		Episode int `json:"episode"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.mgr.resumeEpisode(r.PathValue("id"), domain.EpisodeKey{Season: body.Season, Episode: body.Episode}) {
+		writeErr(w, http.StatusConflict, "episode cannot be resumed — it is not paused")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
@@ -529,6 +726,17 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	dirs := s.libraryDirs()
 	writeJSON(w, http.StatusOK, scanLibrary(dirs))
+}
+
+// handleLibraryDownloaded reports which episodes of a kino.pub item are already
+// downloaded, so the title card can mark them.
+func (s *Server) handleLibraryDownloaded(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	writeJSON(w, http.StatusOK, downloadedForItem(s.libraryDirs(), id))
 }
 
 func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {

@@ -249,6 +249,25 @@ func TestApplyDefaults_FillsAllDefaults(t *testing.T) {
 	}
 }
 
+// Regression: a user who explicitly requests quiet output must keep it.
+// Quiet was historically the zero value (VerbosityQuiet==0) and ApplyDefaults,
+// treating 0 as "unset", silently upgraded it to normal — so the GUI's "quiet"
+// option did nothing. VerbosityNormal is now the zero value, so quiet survives.
+func TestApplyDefaults_PreservesQuietVerbosity(t *testing.T) {
+	cfg := &domain.RunConfig{Verbosity: domain.VerbosityQuiet}
+	ApplyDefaults(cfg)
+	if cfg.Verbosity != domain.VerbosityQuiet {
+		t.Errorf("Verbosity = %d, want VerbosityQuiet (%d): an explicit quiet must survive ApplyDefaults",
+			cfg.Verbosity, domain.VerbosityQuiet)
+	}
+
+	unset := &domain.RunConfig{}
+	ApplyDefaults(unset)
+	if unset.Verbosity != domain.VerbosityNormal {
+		t.Errorf("unset Verbosity = %d, want VerbosityNormal (%d)", unset.Verbosity, domain.VerbosityNormal)
+	}
+}
+
 func TestApplyDefaults_DoesNotOverrideExisting(t *testing.T) {
 	cfg := &domain.RunConfig{
 		MaxConcurrency: 8,

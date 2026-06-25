@@ -3,15 +3,17 @@ import clsx from "clsx";
 import {
   ArrowUpCircle,
   Clapperboard,
+  Film,
   Library as LibraryIcon,
   ListVideo,
+  Loader2,
   PanelLeftClose,
   PanelLeftOpen,
+  PlugZap,
   ShieldAlert,
-  ShieldCheck,
   Stethoscope,
+  Unplug,
   User as UserIcon,
-  Wifi,
   WifiOff,
 } from "lucide-react";
 import { useApp } from "./store";
@@ -36,7 +38,7 @@ const NAV: { id: Page; label: string; icon: any }[] = [
 ];
 
 export default function App() {
-  const { connected, version, jobs, kpauth, kpUser, ffmpeg, update } = useApp();
+  const { connected, version, jobs, kpauth, kpUser, kpUserError, ffmpeg, update } = useApp();
   const { t } = useI18n();
   // The URL hash is the single source of truth for the active page (and, within
   // a page, the open collection/card) so reloads and browser back/forward
@@ -90,14 +92,20 @@ export default function App() {
                 (collapsed ? (
                   <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-gold-500" />
                 ) : (
-                  <span className="rounded-full bg-gold-500 px-1.5 py-0.5 text-[10px] font-bold text-ink-950">
+                  <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-gold-500 px-1.5 text-[10px] font-bold leading-none text-ink-950">
                     {activeJobs}
                   </span>
                 ))}
             </button>
           ))}
         </nav>
-        <ProfileCard collapsed={collapsed} kpauth={kpauth} kpUser={kpUser} onClick={() => navigate("settings")} />
+        <ProfileCard
+          collapsed={collapsed}
+          kpauth={kpauth}
+          kpUser={kpUser}
+          kpUserError={kpUserError}
+          onClick={() => navigate("settings")}
+        />
         <SystemFooter ffmpegFound={ffmpeg.ffmpegFound} version={version} connected={connected} collapsed={collapsed} />
       </aside>
 
@@ -121,29 +129,6 @@ export default function App() {
               </button>
             )}
             <LangSwitcher />
-            <span
-              className={clsx(
-                "chip hidden sm:inline-flex",
-                connected
-                  ? "border-emerald-500/20 bg-emerald-500/[0.08] text-emerald-300"
-                  : "border-ember-500/25 bg-ember-500/[0.1] text-ember-400",
-              )}
-            >
-              {connected ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
-              {connected ? t("Live") : t("Reconnecting…")}
-            </span>
-            <button
-              onClick={() => navigate("settings")}
-              className={clsx(
-                "chip transition",
-                kpauth.loggedIn
-                  ? "border-emerald-500/25 bg-emerald-500/[0.08] text-emerald-300 hover:bg-emerald-500/[0.14]"
-                  : "border-gold-500/30 bg-gold-500/[0.1] text-gold-300 hover:bg-gold-500/[0.16]",
-              )}
-            >
-              {kpauth.loggedIn ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldAlert className="h-3.5 w-3.5" />}
-              {kpauth.loggedIn ? t("Signed in") : t("Sign in")}
-            </button>
           </div>
         </header>
 
@@ -210,11 +195,13 @@ function ProfileCard({
   collapsed,
   kpauth,
   kpUser,
+  kpUserError,
   onClick,
 }: {
   collapsed: boolean;
   kpauth: KPStatus;
   kpUser: KPUser | null;
+  kpUserError: boolean;
   onClick: () => void;
 }) {
   const { t } = useI18n();
@@ -235,9 +222,47 @@ function ProfileCard({
     );
   }
 
-  const active = kpUser?.subscriptionActive ?? false;
-  const days = kpUser?.subscriptionDays ?? 0;
-  const name = kpUser?.username || t("Signed in");
+  // Logged in, but the profile (and therefore subscription) isn't known yet:
+  // either the first fetch is in flight or the kino.pub host is unreachable
+  // (e.g. VPN off). Say so honestly rather than defaulting to "No subscription".
+  if (!kpUser) {
+    const status = kpUserError ? t("Can't reach kino.pub") : t("Checking subscription…");
+    return (
+      <button
+        onClick={onClick}
+        title={collapsed ? `${t("Signed in")} · ${status}` : undefined}
+        className={clsx(
+          "mb-2 flex items-center gap-2.5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-2 text-left transition hover:bg-white/[0.06]",
+          collapsed && "justify-center",
+        )}
+      >
+        <div
+          className={clsx(
+            "grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink-800 ring-2",
+            kpUserError ? "ring-amber-400/60" : "ring-slate-600/60",
+          )}
+        >
+          {kpUserError ? (
+            <WifiOff className="h-[18px] w-[18px] text-amber-300" />
+          ) : (
+            <Loader2 className="h-[18px] w-[18px] animate-spin text-slate-400" />
+          )}
+        </div>
+        {!collapsed && (
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-slate-200">{t("Signed in")}</div>
+            <div className={clsx("text-[11px] font-medium", kpUserError ? "text-amber-300" : "text-slate-500")}>
+              {status}
+            </div>
+          </div>
+        )}
+      </button>
+    );
+  }
+
+  const active = kpUser.subscriptionActive;
+  const days = kpUser.subscriptionDays;
+  const name = kpUser.username || t("Signed in");
   const ring = !active ? "ring-ember-500/60" : days <= 14 ? "ring-amber-400/70" : "ring-emerald-400/70";
   const subText = !active ? "text-ember-400" : days <= 14 ? "text-amber-300" : "text-emerald-400";
 
@@ -279,29 +304,71 @@ function SystemFooter({
   const { t } = useI18n();
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2.5 border-t border-white/[0.06] pt-3">
+      <div className="mt-2 flex flex-col items-center gap-2 border-t border-white/[0.06] pt-3">
+        <span
+          title={connected ? t("App connected") : t("Reconnecting to app…")}
+          className={clsx(
+            "grid h-7 w-7 place-items-center rounded-lg",
+            connected ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-400/10 text-amber-400 animate-pulse-soft",
+          )}
+        >
+          {connected ? <PlugZap className="h-3.5 w-3.5" /> : <Unplug className="h-3.5 w-3.5" />}
+        </span>
         <span
           title={ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
-          className={clsx("h-2 w-2 rounded-full", ffmpegFound ? "bg-emerald-400" : "bg-ember-500")}
-        />
-        <span
-          title={connected ? t("connected") : t("reconnecting")}
-          className={clsx("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse-soft")}
-        />
+          className={clsx(
+            "grid h-7 w-7 place-items-center rounded-lg",
+            ffmpegFound ? "bg-emerald-500/10 text-emerald-400" : "bg-ember-500/10 text-ember-400",
+          )}
+        >
+          <Film className="h-3.5 w-3.5" />
+        </span>
       </div>
     );
   }
   return (
-    <div className="space-y-2 border-t border-white/[0.06] pt-3 text-xs text-slate-500">
-      <div className="flex items-center gap-2">
-        <span className={clsx("h-2 w-2 rounded-full", ffmpegFound ? "bg-emerald-400" : "bg-ember-500")} />
-        {ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
+    <div className="mt-2 space-y-1.5 border-t border-white/[0.06] pt-3">
+      <div className="space-y-0.5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-1.5">
+        {/* Link to the local app backend (SSE) — not the kino.pub/internet
+            connection. Green means this page is receiving live updates. */}
+        <div className="flex items-center gap-2.5 px-1.5 py-1">
+          <span
+            className={clsx(
+              "grid h-7 w-7 shrink-0 place-items-center rounded-lg",
+              connected ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-400/10 text-amber-400",
+            )}
+          >
+            {connected ? <PlugZap className="h-4 w-4" /> : <Unplug className="h-4 w-4" />}
+          </span>
+          <span className="flex-1 text-[13px] font-medium text-slate-300">
+            {connected ? t("App connected") : t("Reconnecting to app…")}
+          </span>
+          <span
+            className={clsx(
+              "h-1.5 w-1.5 rounded-full",
+              connected
+                ? "bg-emerald-400 shadow-[0_0_6px_1px_rgba(52,211,153,0.6)]"
+                : "bg-amber-400 animate-pulse-soft",
+            )}
+          />
+        </div>
+        {/* ffmpeg */}
+        <div className="flex items-center gap-2.5 px-1.5 py-1">
+          <span
+            className={clsx(
+              "grid h-7 w-7 shrink-0 place-items-center rounded-lg",
+              ffmpegFound ? "bg-emerald-500/10 text-emerald-400" : "bg-ember-500/10 text-ember-400",
+            )}
+          >
+            <Film className="h-4 w-4" />
+          </span>
+          <span className="flex-1 text-[13px] font-medium text-slate-300">
+            {ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
+          </span>
+          {!ffmpegFound && <span className="h-1.5 w-1.5 rounded-full bg-ember-500" />}
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        <span className={clsx("h-2 w-2 rounded-full", connected ? "bg-emerald-400" : "bg-amber-400 animate-pulse-soft")} />
-        {connected ? t("connected") : t("reconnecting")}
-      </div>
-      <div className="pt-1 text-slate-600">{version}</div>
+      <div className="text-center text-[11px] text-slate-600">{version}</div>
     </div>
   );
 }

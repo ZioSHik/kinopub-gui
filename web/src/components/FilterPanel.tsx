@@ -4,8 +4,8 @@ import { api, type NamedRef } from "../api";
 import { useI18n } from "../i18n";
 
 export interface FilterState {
-  type: string;
-  genre: string;
+  category: string; // category key (see categories.tsx); drives type/genre
+  genre: string; // sub-genre id (type categories only)
   country: string;
   sort: string;
   yearFrom: number;
@@ -22,10 +22,10 @@ export const YEAR_MIN = 1912;
 export const YEAR_MAX = 2026;
 
 export const defaultFilter = (): FilterState => ({
-  type: "",
+  category: "",
   genre: "",
   country: "",
-  sort: "updated-",
+  sort: "created-",
   yearFrom: YEAR_MIN,
   yearTo: YEAR_MAX,
   kpFrom: 0,
@@ -35,16 +35,6 @@ export const defaultFilter = (): FilterState => ({
   ac3: false,
   subtitles: false,
 });
-
-const TYPES = [
-  { v: "", label: "All" },
-  { v: "movie", label: "Movies" },
-  { v: "serial", label: "Series" },
-  { v: "4k", label: "4K" },
-  { v: "concert", label: "Concerts" },
-  { v: "documovie", label: "Documentary" },
-  { v: "tvshow", label: "TV shows" },
-];
 
 const SORTS = [
   { v: "updated-", label: "By update" },
@@ -67,14 +57,10 @@ export function FilterPanel({
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const [genres, setGenres] = useState<NamedRef[]>([]);
   const [countries, setCountries] = useState<NamedRef[]>([]);
 
-  // Genres are fetched per content type so the list is clean (the unfiltered
-  // endpoint mixes in music/docu junk). Default to movie genres.
-  useEffect(() => {
-    api.discoverGenres(value.type || "movie").then((r) => setGenres(r.items || [])).catch(() => {});
-  }, [value.type]);
+  // Type and genre live in the category bar / genre chips above (see Discover);
+  // this panel covers the remaining cross-cutting filters.
   useEffect(() => {
     api.discoverCountries().then((r) => setCountries(r.items || [])).catch(() => {});
   }, []);
@@ -92,9 +78,7 @@ export function FilterPanel({
       </button>
       {open && (
         <div className="space-y-4 border-t border-white/[0.06] p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Select label={t("Type")} value={value.type} onChange={(v) => set("type", v)} options={TYPES.map((x) => ({ v: x.v, label: t(x.label) }))} />
-            <Select label={t("Genre")} value={value.genre} onChange={(v) => set("genre", v)} options={[{ v: "", label: t("Any") }, ...genres.map((g) => ({ v: g.id, label: g.title }))]} />
+          <div className="grid gap-3 sm:grid-cols-2">
             <Select label={t("Country")} value={value.country} onChange={(v) => set("country", v)} options={[{ v: "", label: t("Any") }, ...countries.map((c) => ({ v: c.id, label: c.title }))]} />
             <Select label={t("Sort")} value={value.sort} onChange={(v) => set("sort", v)} options={SORTS.map((x) => ({ v: x.v, label: t(x.label) }))} />
           </div>

@@ -25,6 +25,30 @@ type Dependencies struct {
 
 	// Optional: interactive audio-track picker. nil disables the menu.
 	AudioChooser domain.AudioChooser
+
+	// Optional: PrioritizeRequests delivers episode keys that should jump to the
+	// front of this run's download queue. The engine drains it between episodes,
+	// so a user can promote a not-yet-started episode without waiting. nil
+	// disables live reordering.
+	PrioritizeRequests <-chan domain.EpisodeKey
+
+	// Optional: PauseRequests / ResumeRequests hold or release an individual
+	// episode — including one that is actively downloading (its download is
+	// canceled and its partial segments preserved). A paused episode is set aside
+	// and skipped; the run stays alive while any episode is held, so it can be
+	// resumed. nil disables per-episode pause.
+	PauseRequests  <-chan domain.EpisodeKey
+	ResumeRequests <-chan domain.EpisodeKey
+
+	// Optional: RetryRequests re-queues an episode that already failed in THIS run
+	// (re-attempting it in place, without a new job). nil disables live retry.
+	RetryRequests <-chan domain.EpisodeKey
+
+	// Optional: Paused reports whether the whole run is being paused (as opposed
+	// to canceled). When it returns true on exit, partial segment data (.hls-tmp)
+	// is preserved so a later resume continues instead of restarting. nil ⇒ never
+	// paused (a context cancel is a hard stop that cleans up).
+	Paused func() bool
 }
 
 // App is the composition root that wires all services together and exposes

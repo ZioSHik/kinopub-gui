@@ -140,6 +140,7 @@ type Episode struct {
 	Duration  float64     `json:"duration"`
 	Thumbnail string      `json:"thumbnail"`
 	Watched   int         `json:"watched"` // 1 = already watched
+	Watching  Watching    `json:"watching"`
 	Files     []File      `json:"files"`
 	Audios    []Audio     `json:"audios"`
 	Subtitles []Subtitle  `json:"subtitles"`
@@ -151,9 +152,19 @@ type Video struct {
 	Number    int         `json:"number"`
 	Title     string      `json:"title"`
 	Duration  float64     `json:"duration"`
+	Watching  Watching    `json:"watching"`
 	Files     []File      `json:"files"`
 	Audios    []Audio     `json:"audios"`
 	Subtitles []Subtitle  `json:"subtitles"`
+}
+
+// Watching is the per-user resume state of a video/episode from items/{id}:
+// Status is -1 (unseen) / 0 (in progress) / 1 (watched); Time is the saved
+// playback position in seconds (what marktime last stored). Time may come back
+// fractional, hence float.
+type Watching struct {
+	Status int     `json:"status"`
+	Time   float64 `json:"time"`
 }
 
 // File is one quality variant with its stream URLs.

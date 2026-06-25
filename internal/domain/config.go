@@ -10,8 +10,13 @@ type Quality string
 type Verbosity int
 
 const (
-	VerbosityQuiet   Verbosity = iota // show only warn/error
-	VerbosityNormal                   // show info/warn/error (default)
+	// VerbosityNormal is the zero value on purpose: an unset RunConfig.Verbosity
+	// must default to normal output, and ApplyDefaults treats the zero value as
+	// "unset". If Quiet were the zero value (as it once was), a user who
+	// explicitly requested "quiet" would be indistinguishable from "unset" and
+	// silently upgraded to normal. Quiet/Verbose are therefore non-zero.
+	VerbosityNormal  Verbosity = iota // show info/warn/error (default)
+	VerbosityQuiet                    // show only warn/error
 	VerbosityVerbose                  // show debug/info/warn/error
 )
 
@@ -53,8 +58,14 @@ type RunConfig struct {
 	// EpisodeSel and lets the GUI send an exact, per-episode selection that the
 	// season/episode cross-product cannot express.
 	SelectedEpisodes []EpisodeKey
-	DryRun           bool          // (Req 15.6)
-	GracePeriod      time.Duration // default 30s (Req 4.7)
+	// RetryOnly, when non-empty, narrows the to-download set for THIS run to just
+	// these episodes (intersected with the normal selection), WITHOUT changing the
+	// overall plan/series scope. The GUI sets it for a per-episode retry of a
+	// finished job so retrying one episode re-downloads only that one — not every
+	// not-yet-completed episode.
+	RetryOnly   []EpisodeKey
+	DryRun      bool          // (Req 15.6)
+	GracePeriod time.Duration // default 30s (Req 4.7)
 
 	// Authentication / request shaping. kino.pub sits behind Cloudflare and may
 	// return HTTP 403 for unauthenticated requests. These fields let the user

@@ -2,6 +2,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import {
   AlertTriangle,
+  ArrowUp,
   Ban,
   CheckCircle2,
   ChevronDown,
@@ -9,6 +10,9 @@ import {
   Clock,
   Hourglass,
   Loader2,
+  Pause,
+  Play,
+  RotateCw,
   ScrollText,
   Trash2,
   XCircle,
@@ -28,6 +32,7 @@ function StatusBadge({ status }: { status: JobView["status"] }) {
     completed: { label: "Completed", cls: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300", icon: CheckCircle2 },
     failed: { label: "Failed", cls: "border-ember-500/30 bg-ember-500/10 text-ember-400", icon: XCircle },
     canceled: { label: "Canceled", cls: "border-white/10 bg-white/[0.04] text-slate-400", icon: Ban },
+    paused: { label: "Paused", cls: "border-amber-500/30 bg-amber-500/10 text-amber-300", icon: Pause },
   };
   const it = map[status];
   return (
@@ -46,14 +51,53 @@ function epVariant(state: EpisodeView["state"]) {
       return "rose" as const;
     case "deferred":
       return "blue" as const;
+    case "paused":
+      return "slate" as const;
     default:
       return "gold" as const;
   }
 }
 
-function EpisodeRow({ ep }: { ep: EpisodeView }) {
+function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; jobStatus: JobView["status"] }) {
   const { t } = useI18n();
-  const active = ep.state === "running";
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const jobFinished = jobStatus === "completed" || jobStatus === "failed" || jobStatus === "canceled";
+  const jobLive = jobStatus === "running" || jobStatus === "resolving";
+  const active = ep.state === "running" && !jobFinished;
+  // Prioritize only matters while the job is actively downloading. Retry shows
+  // for an episode that failed mid-run, or any non-completed episode left behind
+  // when the job has finished (e.g. canceled while it was parked for retry).
+  const canPrioritize = jobLive && (ep.state === "pending" || ep.state === "deferred");
+  // Retry shows for an episode that failed mid-run, or any non-completed episode
+  // left behind on a finished job. Not on a paused job — there the right action
+  // is Resume (which re-attempts the failed episode), so Retry would contradict
+  // the pause and start a download while the job is paused.
+  const canRetryEp =
+    (ep.state === "failed" && jobStatus !== "paused") || (jobFinished && ep.state !== "completed");
+  // Per-episode pause holds an episode aside — including one that is actively
+  // downloading (its download stops and partial segments are kept). Resume
+  // releases it. Only meaningful while the job itself is downloading.
+  const canPauseEp =
+    jobLive && (ep.state === "pending" || ep.state === "deferred" || ep.state === "running");
+  const canResumeEp = jobLive && ep.state === "paused";
+
+  const act = (fn: () => Promise<unknown>, ok: string) => async () => {
+    setBusy(true);
+    try {
+      await fn();
+      if (ok) toast(ok, "info");
+    } catch (e: any) {
+      toast(e.message || "Error", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const retryEp = act(() => api.retryEpisode(jobId, ep.season, ep.episode), t("Retrying {ep} — re-downloading…", { ep: ep.key }));
+  const prioritizeEp = act(() => api.prioritizeEpisode(jobId, ep.season, ep.episode), t("{ep} moved to the front — downloading next", { ep: ep.key }));
+  const pauseEp = act(() => api.pauseEpisode(jobId, ep.season, ep.episode), t("{ep} paused", { ep: ep.key }));
+  const resumeEp = act(() => api.resumeEpisode(jobId, ep.season, ep.episode), t("{ep} resumed", { ep: ep.key }));
+
   return (
     <div className="rounded-xl border border-white/[0.05] bg-ink-900/40 px-3 py-2.5">
       <div className="flex items-center gap-3">
@@ -63,6 +107,7 @@ function EpisodeRow({ ep }: { ep: EpisodeView }) {
             ep.state === "completed" && "bg-emerald-500/15 text-emerald-300",
             ep.state === "failed" && "bg-ember-500/15 text-ember-400",
             ep.state === "deferred" && "bg-sky-500/15 text-sky-300",
+            ep.state === "paused" && "bg-amber-500/15 text-amber-300",
             (ep.state === "running" || ep.state === "pending") && "bg-white/[0.05] text-slate-400",
           )}
         >
@@ -72,6 +117,8 @@ function EpisodeRow({ ep }: { ep: EpisodeView }) {
             <XCircle className="h-4 w-4" />
           ) : ep.state === "deferred" ? (
             <Hourglass className="h-3.5 w-3.5" />
+          ) : ep.state === "paused" ? (
+            <Pause className="h-3.5 w-3.5" />
           ) : ep.state === "running" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
@@ -85,8 +132,50 @@ function EpisodeRow({ ep }: { ep: EpisodeView }) {
               <span className="font-mono text-xs text-slate-500">{ep.key}</span>{" "}
               {ep.title || ""}
             </span>
-            <span className="shrink-0 text-xs tabular-nums text-slate-400">
-              {ep.state === "completed" ? "100%" : `${ep.percent}%`}
+            <span className="flex shrink-0 items-center gap-2">
+              {canResumeEp && (
+                <button
+                  className="btn-ghost px-2 py-0.5 text-amber-300"
+                  onClick={resumeEp}
+                  disabled={busy}
+                  title={t("Resume this episode")}
+                >
+                  <Play className="h-3.5 w-3.5" /> {t("Resume")}
+                </button>
+              )}
+              {canPauseEp && (
+                <button
+                  className="btn-ghost px-2 py-0.5 text-amber-300"
+                  onClick={pauseEp}
+                  disabled={busy}
+                  title={t("Pause this episode — hold it in the queue")}
+                >
+                  <Pause className="h-3.5 w-3.5" /> {t("Pause")}
+                </button>
+              )}
+              {canPrioritize && (
+                <button
+                  className="btn-ghost px-2 py-0.5 text-gold-300"
+                  onClick={prioritizeEp}
+                  disabled={busy}
+                  title={t("Download this episode next")}
+                >
+                  <ArrowUp className="h-3.5 w-3.5" /> {t("Next")}
+                </button>
+              )}
+              {canRetryEp && (
+                <button
+                  className="btn-ghost px-2 py-0.5 text-gold-300"
+                  onClick={retryEp}
+                  disabled={busy}
+                  title={t("Retry this episode now — without waiting for the rest")}
+                >
+                  <RotateCw className="h-3.5 w-3.5" /> {t("Retry")}
+                </button>
+              )}
+              <span className="text-xs tabular-nums text-slate-400">
+                {ep.state === "completed" ? "100%" : `${ep.percent}%`}
+              </span>
             </span>
           </div>
           <ProgressBar
@@ -103,6 +192,7 @@ function EpisodeRow({ ep }: { ep: EpisodeView }) {
             {ep.state === "deferred" && (
               <span className="text-sky-400">{t("retrying (attempt {n})", { n: ep.attempts })}</span>
             )}
+            {ep.state === "paused" && <span className="text-amber-400">{t("paused")}</span>}
             {ep.error && (ep.state === "failed" || ep.state === "deferred") && (
               <span className="truncate text-ember-400/80" title={ep.error}>{ep.error}</span>
             )}
@@ -144,7 +234,7 @@ export function JobCard({ job }: { job: JobView }) {
   const totalEps = job.plan && job.plan.total > 0 ? job.plan.total : visibleEps;
   const doneEps = job.episodes.filter((e) => e.state === "completed").length;
   const runningPartial = job.episodes
-    .filter((e) => e.state === "running")
+    .filter((e) => e.state === "running" || e.state === "paused")
     .reduce((acc, e) => acc + e.percent / 100, 0);
   const overall =
     totalEps > 0 ? Math.min(100, ((doneEps + runningPartial) / totalEps) * 100) : finished ? 100 : 0;
@@ -175,6 +265,55 @@ export function JobCard({ job }: { job: JobView }) {
       setBusy(false);
     }
   };
+  const retry = async () => {
+    setBusy(true);
+    try {
+      await api.retryJob(job.id);
+      toast(t("Retrying — re-downloading what failed…"), "info");
+    } catch (e: any) {
+      toast(e.message || "Error", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const prioritize = async () => {
+    setBusy(true);
+    try {
+      await api.prioritizeJob(job.id);
+      toast(t("Moved to the front of the queue"), "info");
+    } catch (e: any) {
+      toast(e.message || "Error", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const pause = async () => {
+    setBusy(true);
+    try {
+      await api.pauseJob(job.id);
+      toast(t("Paused — progress is kept"), "info");
+    } catch (e: any) {
+      toast(e.message || "Error", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resume = async () => {
+    setBusy(true);
+    try {
+      await api.resumeJob(job.id);
+      toast(t("Resuming — continuing where it stopped…"), "info");
+    } catch (e: any) {
+      toast(e.message || "Error", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Offer a retry whenever the run ended with something left to download: a hard
+  // failure, a cancellation, or a partial success. Completed-clean jobs don't.
+  const canRetry =
+    finished && (job.status === "failed" || job.status === "canceled" || (job.summary?.failed ?? 0) > 0);
 
   return (
     <div className="card animate-fade-in overflow-hidden">
@@ -219,7 +358,15 @@ export function JobCard({ job }: { job: JobView }) {
             </div>
             <ProgressBar
               value={overall}
-              variant={job.status === "failed" ? "rose" : job.status === "completed" ? "green" : "gold"}
+              variant={
+                job.status === "failed"
+                  ? "rose"
+                  : job.status === "completed"
+                    ? "green"
+                    : job.status === "paused"
+                      ? "slate"
+                      : "gold"
+              }
               active={job.status === "running" || job.status === "resolving"}
             />
           </div>
@@ -248,14 +395,40 @@ export function JobCard({ job }: { job: JobView }) {
                   <ScrollText className="h-3.5 w-3.5" /> {t("Log")}
                 </button>
               )}
-              {!finished ? (
-                <button className="btn-danger px-3 py-1.5" onClick={cancel} disabled={busy}>
-                  <Ban className="h-3.5 w-3.5" /> {t("Stop")}
-                </button>
+              {job.status === "paused" ? (
+                <>
+                  <button className="btn-ghost px-3 py-1.5 text-amber-300" onClick={resume} disabled={busy}>
+                    <Play className="h-3.5 w-3.5" /> {t("Resume")}
+                  </button>
+                  <button className="btn-ghost px-3 py-1.5" onClick={remove} disabled={busy}>
+                    <Trash2 className="h-3.5 w-3.5" /> {t("Remove")}
+                  </button>
+                </>
+              ) : !finished ? (
+                <>
+                  {job.status === "queued" && (
+                    <button className="btn-ghost px-3 py-1.5 text-gold-300" onClick={prioritize} disabled={busy}>
+                      <ArrowUp className="h-3.5 w-3.5" /> {t("Prioritize")}
+                    </button>
+                  )}
+                  <button className="btn-ghost px-3 py-1.5 text-amber-300" onClick={pause} disabled={busy}>
+                    <Pause className="h-3.5 w-3.5" /> {t("Pause")}
+                  </button>
+                  <button className="btn-danger px-3 py-1.5" onClick={cancel} disabled={busy}>
+                    <Ban className="h-3.5 w-3.5" /> {t("Stop")}
+                  </button>
+                </>
               ) : (
-                <button className="btn-ghost px-3 py-1.5" onClick={remove} disabled={busy}>
-                  <Trash2 className="h-3.5 w-3.5" /> {t("Remove")}
-                </button>
+                <>
+                  {canRetry && (
+                    <button className="btn-ghost px-3 py-1.5 text-gold-300" onClick={retry} disabled={busy}>
+                      <RotateCw className="h-3.5 w-3.5" /> {t("Retry")}
+                    </button>
+                  )}
+                  <button className="btn-ghost px-3 py-1.5" onClick={remove} disabled={busy}>
+                    <Trash2 className="h-3.5 w-3.5" /> {t("Remove")}
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -265,7 +438,7 @@ export function JobCard({ job }: { job: JobView }) {
       {showEps && totalEps > 0 && (
         <div className="grid gap-2 border-t border-white/[0.05] bg-black/20 p-4 md:grid-cols-2">
           {job.episodes.map((ep) => (
-            <EpisodeRow key={ep.key} ep={ep} />
+            <EpisodeRow key={ep.key} ep={ep} jobId={job.id} jobStatus={job.status} />
           ))}
         </div>
       )}

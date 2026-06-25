@@ -22,7 +22,7 @@ export interface EpisodeView {
   season: number;
   episode: number;
   title: string;
-  state: "pending" | "running" | "completed" | "failed" | "deferred";
+  state: "pending" | "running" | "completed" | "failed" | "deferred" | "paused";
   percent: number;
   bytes: number;
   total: number;
@@ -67,7 +67,8 @@ export type JobStatus =
   | "running"
   | "completed"
   | "failed"
-  | "canceled";
+  | "canceled"
+  | "paused";
 
 export interface JobView {
   id: string;
@@ -131,6 +132,7 @@ export interface Settings {
   noChunked: boolean;
   theme: string;
   libraryDirs: string[] | null;
+  maxActiveJobs: number;
 }
 
 export interface Snapshot {
@@ -166,6 +168,8 @@ export interface StreamInfo {
   manifestUrl: string;
   playUrl: string; // same-origin signed proxy URL for hls.js
   title: string;
+  resumeTime?: number; // saved playback position in seconds (0 = nothing to resume)
+  duration?: number; // total runtime in seconds (0 = unknown)
 }
 
 export interface DiscoverItem {
@@ -201,6 +205,14 @@ export interface DiscoverAudio {
   author: string;
   label: string;
   filter: string;
+  codec?: string;
+  channels?: number;
+  surround: boolean;
+}
+
+export interface AudioSpec {
+  require: string[];
+  forbid: string[];
 }
 
 export interface DiscoverEpisode {
@@ -273,6 +285,7 @@ export interface RunRequest {
   episodes: string;
   episodeKeys?: string[];
   audio: string;
+  audioSpecs?: AudioSpec[];
   audioMenu: boolean;
   force: boolean;
   noChunked: boolean;
@@ -339,6 +352,9 @@ export interface LibrarySeries {
   description?: string;
   posterUrl?: string;
   inputUrl?: string;
+  type?: string;
+  isMovie: boolean;
+  genres?: string[];
   count: number;
   totalBytes: number;
   updatedAt: string;
@@ -348,6 +364,20 @@ export interface LibrarySeries {
 export interface LibraryResponse {
   series: LibrarySeries[];
   dirs: string[];
+}
+
+export interface DownloadedEpisode {
+  key: string;
+  season: number;
+  episode: number;
+  resolution?: string;
+  exists: boolean;
+}
+
+export interface DownloadedResponse {
+  id: string;
+  dir?: string;
+  episodes: DownloadedEpisode[];
 }
 
 export interface DoctorRequest {
@@ -428,12 +458,26 @@ export const api = {
   jobs: () => req<JobView[]>("GET", "/api/jobs"),
   startJob: (r: Partial<StartRequest>) => req<JobView>("POST", "/api/jobs", r),
   cancelJob: (id: string) => req<{ canceling: boolean }>("POST", `/api/jobs/${id}/cancel`),
+  retryJob: (id: string) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/retry`),
+  retryEpisode: (id: string, season: number, episode: number) =>
+    req<{ ok: boolean }>("POST", `/api/jobs/${id}/retry-episode`, { season, episode }),
+  prioritizeEpisode: (id: string, season: number, episode: number) =>
+    req<{ ok: boolean }>("POST", `/api/jobs/${id}/prioritize-episode`, { season, episode }),
+  prioritizeJob: (id: string) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/prioritize`),
+  pauseJob: (id: string) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/pause`),
+  resumeJob: (id: string) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/resume`),
+  pauseEpisode: (id: string, season: number, episode: number) =>
+    req<{ ok: boolean }>("POST", `/api/jobs/${id}/pause-episode`, { season, episode }),
+  resumeEpisode: (id: string, season: number, episode: number) =>
+    req<{ ok: boolean }>("POST", `/api/jobs/${id}/resume-episode`, { season, episode }),
   deleteJob: (id: string) => req<{ removed: boolean }>("DELETE", `/api/jobs/${id}`),
   clearJobs: () => req<{ removed: number }>("POST", "/api/jobs/clear"),
   answerAudio: (id: string, indices: number[]) =>
     req<{ ok: boolean }>("POST", `/api/jobs/${id}/audio`, { indices }),
   doctor: (r: DoctorRequest) => req<DoctorReport>("POST", "/api/doctor", r),
   library: () => req<LibraryResponse>("GET", "/api/library"),
+  libraryDownloaded: (id: string) =>
+    req<DownloadedResponse>("GET", `/api/library/downloaded?id=${encodeURIComponent(id)}`),
   deleteLibrary: (dir: string) => req<{ deleted: boolean }>("POST", "/api/library/delete", { dir }),
   deleteLibraryEpisode: (dir: string, key: string) =>
     req<{ deleted: boolean }>("POST", "/api/library/delete-episode", { dir, key }),
@@ -453,6 +497,15 @@ export const api = {
     if (episode != null) p.set("episode", String(episode));
     return req<StreamInfo>("GET", `/api/discover/stream?${p.toString()}`);
   },
+  // Report playback progress so the title appears in History / continue-watching
+  // and can be resumed. season/episode are 0 for movies.
+  markTime: (id: string, time: number, season?: number, episode?: number) =>
+    req<{ ok: boolean }>("POST", "/api/discover/marktime", {
+      id,
+      time: Math.max(0, Math.floor(time)),
+      season: season ?? 0,
+      episode: episode ?? 0,
+    }),
   discoverSearch: (q: string, page = 1) =>
     req<DiscoverPage>("GET", `/api/discover/search?q=${encodeURIComponent(q)}&page=${page}`),
   discoverItems: (query: ItemsQuery) => {

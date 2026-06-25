@@ -38,10 +38,10 @@ type LiveReporter struct {
 	plan domain.SeriesPlan
 
 	// Tracking state
-	completedTotal  int            // total completed episodes across all seasons
-	completedSeason map[int]int    // season → completed count
-	currentEpisodes map[domain.EpisodeKey]*episodeState
-	failedEpisodes  map[domain.EpisodeKey]error
+	completedTotal   int         // total completed episodes across all seasons
+	completedSeason  map[int]int // season → completed count
+	currentEpisodes  map[domain.EpisodeKey]*episodeState
+	failedEpisodes   map[domain.EpisodeKey]error
 	deferredEpisodes map[domain.EpisodeKey]deferredInfo // parked for later retry
 
 	// Display state

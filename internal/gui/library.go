@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 )
 
 const stateFileName = ".kinopub-state.json"
@@ -39,6 +40,9 @@ type LibrarySeries struct {
 	Description   string           `json:"description,omitempty"`
 	PosterURL     string           `json:"posterUrl,omitempty"`
 	InputURL      string           `json:"inputUrl,omitempty"`
+	Type          string           `json:"type,omitempty"`   // kino.pub item type (movie, serial, …)
+	IsMovie       bool             `json:"isMovie"`          // movie vs series, for the library split
+	Genres        []string         `json:"genres,omitempty"` // genre titles, for filtering
 	Count         int              `json:"count"`
 	TotalBytes    int64            `json:"totalBytes"`
 	UpdatedAt     time.Time        `json:"updatedAt"`
@@ -49,6 +53,60 @@ type LibrarySeries struct {
 type LibraryResponse struct {
 	Series []LibrarySeries `json:"series"`
 	Dirs   []string        `json:"dirs"`
+}
+
+// DownloadedEpisode is one already-downloaded episode of a kino.pub item, used
+// to mark which episodes the title card already has on disk.
+type DownloadedEpisode struct {
+	Key        string `json:"key"`
+	Season     int    `json:"season"`
+	Episode    int    `json:"episode"`
+	Resolution string `json:"resolution,omitempty"`
+	Exists     bool   `json:"exists"`
+}
+
+// DownloadedResponse lists the episodes of a kino.pub item already downloaded.
+type DownloadedResponse struct {
+	ID       string              `json:"id"`
+	Dir      string              `json:"dir,omitempty"`
+	Episodes []DownloadedEpisode `json:"episodes"`
+}
+
+// downloadedForItem scans the library roots for downloads belonging to the given
+// kino.pub item id — matched on the recorded series id or, failing that, the id
+// embedded in the saved InputURL — and returns the episodes already on disk.
+func downloadedForItem(dirs []string, itemID string) DownloadedResponse {
+	resp := DownloadedResponse{ID: itemID, Episodes: []DownloadedEpisode{}}
+	if itemID == "" {
+		return resp
+	}
+	for _, series := range scanLibrary(dirs).Series {
+		if !seriesMatchesItem(series, itemID) {
+			continue
+		}
+		if resp.Dir == "" {
+			resp.Dir = series.Dir
+		}
+		for _, ep := range series.Episodes {
+			resp.Episodes = append(resp.Episodes, DownloadedEpisode{
+				Key:        ep.Key,
+				Season:     ep.Season,
+				Episode:    ep.Episode,
+				Resolution: ep.Resolution,
+				Exists:     ep.Exists,
+			})
+		}
+	}
+	return resp
+}
+
+// seriesMatchesItem reports whether a scanned series belongs to the kino.pub
+// item id.
+func seriesMatchesItem(s LibrarySeries, itemID string) bool {
+	if s.SeriesID == itemID {
+		return true
+	}
+	return s.InputURL != "" && kinopubapi.ItemIDFromURL(s.InputURL) == itemID
 }
 
 // scanLibrary walks the given directories looking for kinopub state files and
@@ -195,6 +253,28 @@ func deleteLibraryEpisode(dir, key string, roots []string) error {
 	return fsutil.AtomicWrite(stateFile, out, 0644)
 }
 
+// isSerialType reports whether a kino.pub item type denotes a series (serial,
+// docuserial, tvshow) rather than a movie.
+func isSerialType(t string) bool {
+	t = strings.ToLower(t)
+	return strings.Contains(t, "serial") || strings.Contains(t, "show")
+}
+
+// isMovieDownload classifies a scanned download as a movie or a series. New
+// downloads carry the kino.pub item type; for older ones (recorded before the
+// type was persisted) it falls back to a structural heuristic — a single part
+// in a single season looks like a movie.
+func isMovieDownload(s LibrarySeries) bool {
+	if s.Type != "" {
+		return !isSerialType(s.Type)
+	}
+	seasons := make(map[int]bool, 2)
+	for _, ep := range s.Episodes {
+		seasons[ep.Season] = true
+	}
+	return len(seasons) <= 1 && len(s.Episodes) <= 1
+}
+
 func readLibraryState(stateFile string) (LibrarySeries, bool) {
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
@@ -219,6 +299,8 @@ func readLibraryState(stateFile string) (LibrarySeries, bool) {
 		item.Description = state.Metadata.Description
 		item.PosterURL = state.Metadata.PosterURL
 		item.InputURL = state.Metadata.InputURL
+		item.Type = state.Metadata.Type
+		item.Genres = state.Metadata.Genres
 		item.UpdatedAt = state.Metadata.UpdatedAt
 	}
 
@@ -253,6 +335,7 @@ func readLibraryState(stateFile string) (LibrarySeries, bool) {
 	if item.Episodes == nil {
 		item.Episodes = []LibraryEpisode{}
 	}
+	item.IsMovie = isMovieDownload(item)
 	sort.Slice(item.Episodes, func(a, b int) bool {
 		if item.Episodes[a].Season != item.Episodes[b].Season {
 			return item.Episodes[a].Season < item.Episodes[b].Season

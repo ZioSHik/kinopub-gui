@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { CheckCircle2, Clapperboard, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Clapperboard, Film, FolderOpen, HardDrive, Library as LibraryIcon, Play, RefreshCw, Trash2, Tv, XCircle } from "lucide-react";
 import { api, type LibraryEpisode, type LibraryResponse, type LibrarySeries } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
@@ -79,7 +79,13 @@ function SeriesCard({ s, onDeleted, onOpenCard }: { s: LibrarySeries; onDeleted:
           <h3 className="truncate text-base font-semibold text-slate-100">{s.title}</h3>
           {s.originalTitle && <p className="truncate text-sm text-slate-500">{s.originalTitle}</p>}
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
-            <span className="chip border-white/10 bg-white/[0.04] text-slate-300">{t("{n} episodes", { n: s.count })}</span>
+            <span className="chip border-white/10 bg-white/[0.04] text-slate-400">
+              {s.isMovie ? <Film className="h-3 w-3" /> : <Tv className="h-3 w-3" />}
+              {s.isMovie ? t("Movie") : t("Serial")}
+            </span>
+            {(!s.isMovie || s.count > 1) && (
+              <span className="chip border-white/10 bg-white/[0.04] text-slate-300">{t("{n} episodes", { n: s.count })}</span>
+            )}
             <span className="chip border-white/10 bg-white/[0.04] text-slate-300">
               <HardDrive className="h-3 w-3" /> {bytes(s.totalBytes)}
             </span>
@@ -156,11 +162,31 @@ function SeriesCard({ s, onDeleted, onOpenCard }: { s: LibrarySeries; onDeleted:
   );
 }
 
+type TypeTab = "all" | "movies" | "series";
+type SortKey = "recent" | "title" | "size";
+
+function TypeChip({ active, count, onClick, children }: { active: boolean; count: number; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition ${
+        active ? "bg-gold-500/[0.14] text-gold-200" : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"
+      }`}
+    >
+      {children}
+      <span className={`text-xs tabular-nums ${active ? "text-gold-300/70" : "text-slate-600"}`}>{count}</span>
+    </button>
+  );
+}
+
 export function LibraryPage() {
   const { toast } = useApp();
   const { t } = useI18n();
   const [data, setData] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [typeTab, setTypeTab] = useState<TypeTab>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("recent");
+  const [genre, setGenre] = useState("");
   // The open card lives in the URL hash ("#/library/i/<id>") so it survives a
   // reload and browser back closes it.
   const cardId = useRoute().itemId ?? null;
@@ -179,6 +205,33 @@ export function LibraryPage() {
   const series = data?.series ?? [];
   const dirs = data?.dirs ?? [];
 
+  const counts = useMemo(() => {
+    const movies = series.filter((s) => s.isMovie).length;
+    return { all: series.length, movies, series: series.length - movies };
+  }, [series]);
+
+  // Genres present across the whole library, for the filter dropdown.
+  const allGenres = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of series) for (const g of s.genres ?? []) set.add(g);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ru"));
+  }, [series]);
+
+  const shown = useMemo(() => {
+    const list = series.filter((s) => {
+      if (typeTab === "movies" && !s.isMovie) return false;
+      if (typeTab === "series" && s.isMovie) return false;
+      if (genre && !(s.genres ?? []).includes(genre)) return false;
+      return true;
+    });
+    list.sort((a, b) => {
+      if (sortKey === "title") return a.title.localeCompare(b.title, "ru");
+      if (sortKey === "size") return b.totalBytes - a.totalBytes;
+      return (b.updatedAt || "").localeCompare(a.updatedAt || ""); // recent first (ISO dates sort lexically)
+    });
+    return list;
+  }, [series, typeTab, genre, sortKey]);
+
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <header className="flex items-center justify-between">
@@ -194,15 +247,46 @@ export function LibraryPage() {
         </button>
       </header>
 
+      {series.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1 rounded-xl border border-white/[0.06] bg-white/[0.02] p-1">
+            <TypeChip active={typeTab === "all"} count={counts.all} onClick={() => setTypeTab("all")}>{t("All")}</TypeChip>
+            <TypeChip active={typeTab === "movies"} count={counts.movies} onClick={() => setTypeTab("movies")}>
+              <Film className="h-3.5 w-3.5" /> {t("Movies")}
+            </TypeChip>
+            <TypeChip active={typeTab === "series"} count={counts.series} onClick={() => setTypeTab("series")}>
+              <Tv className="h-3.5 w-3.5" /> {t("Series")}
+            </TypeChip>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            {allGenres.length > 0 && (
+              <select className="input w-auto py-1.5" value={genre} onChange={(e) => setGenre(e.target.value)} title={t("Genre")}>
+                <option value="">{t("All genres")}</option>
+                {allGenres.map((g) => (
+                  <option key={g} value={g}>{g}</option>
+                ))}
+              </select>
+            )}
+            <select className="input w-auto py-1.5" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} title={t("Sort")}>
+              <option value="recent">{t("Recently added")}</option>
+              <option value="title">{t("Name (A–Z)")}</option>
+              <option value="size">{t("Largest first")}</option>
+            </select>
+          </div>
+        </div>
+      )}
+
       {data && series.length === 0 ? (
         <EmptyState
           icon={<LibraryIcon className="h-7 w-7" />}
           title={t("Nothing downloaded yet")}
           hint={dirs.filter(Boolean).join(", ")}
         />
+      ) : shown.length === 0 ? (
+        <EmptyState icon={<LibraryIcon className="h-7 w-7" />} title={t("Nothing matches the filters")} />
       ) : (
         <div className="space-y-4">
-          {series.map((s) => (
+          {shown.map((s) => (
             <SeriesCard
               key={s.stateFile}
               s={s}
@@ -218,7 +302,7 @@ export function LibraryPage() {
           id={cardId}
           onClose={() => dismiss({ page: "library" })}
           onPick={(it) => replaceRoute({ page: "library", itemId: it.id })}
-          onStarted={() => dismiss({ page: "library" })}
+          onStarted={() => pushRoute({ page: "queue" })}
         />
       )}
     </div>

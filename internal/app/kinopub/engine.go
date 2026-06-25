@@ -124,6 +124,21 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// 4. Filter episodes.
 	allMatching := e.matchingEpisodes(series, cfg)
 	selected := e.filterCompleted(allMatching, state, cfg)
+	// A per-episode retry narrows this run to just the requested episode(s) so it
+	// re-downloads only what the user clicked, not every not-yet-completed one.
+	if len(cfg.RetryOnly) > 0 {
+		want := make(map[[2]int]bool, len(cfg.RetryOnly))
+		for _, k := range cfg.RetryOnly {
+			want[[2]int{k.Season, k.Episode}] = true
+		}
+		narrowed := selected[:0:0]
+		for _, ep := range selected {
+			if want[[2]int{ep.Key.Season, ep.Key.Episode}] {
+				narrowed = append(narrowed, ep)
+			}
+		}
+		selected = narrowed
+	}
 	if len(selected) == 0 {
 		log.Info("no episodes to download (all completed)")
 		return domain.RunResult{Total: 0}, nil
@@ -148,6 +163,8 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		Title:     series.Title,
 		PosterURL: playlist.Poster,
 		InputURL:  cfg.InputURL,
+		Type:      playlist.Type,
+		Genres:    playlist.Genres,
 		UpdatedAt: time.Now(),
 	}
 	_ = e.deps.StateStore.SetMetadata(ctx, series.ID, seriesMeta)
@@ -185,6 +202,10 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	e.deps.HLSDownloader.SetAudioPreference(pref)
 
 	// 8. Start progress reporting.
+	planned := make([]domain.PlannedEpisode, 0, len(selected))
+	for _, ep := range selected {
+		planned = append(planned, domain.PlannedEpisode{Key: ep.Key, Title: ep.Title})
+	}
 	plan := domain.SeriesPlan{
 		Title:              series.Title,
 		PosterURL:          series.PosterURL,
@@ -192,6 +213,7 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		Seasons:            countSeasons(allMatching),
 		AlreadyCompleted:   alreadyCompleted,
 		CompletedPerSeason: countCompletedPerSeason(allMatching, state, e.deps.StateStore),
+		Planned:            planned,
 	}
 	e.deps.ProgressReporter.Start(plan)
 	defer e.deps.ProgressReporter.Stop()
@@ -214,15 +236,33 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		skipped    int
 		outcomes   []domain.JobOutcome
 		retryQueue []*pendingEpisode
+		pausedHold []*pendingEpisode                 // episodes held aside by a per-episode pause
+		epCancels  = map[string]context.CancelFunc{} // per-episode cancel for in-flight downloads
+		pauseMark  = map[string]bool{}               // in-flight episodes to hold (not fail) when their attempt returns
 		inFlight   int
+		winding    bool // set once workers have exited; the control goroutine stops mutating
 	)
+	// epInfo lets the live-retry control reconstruct a pending unit for any
+	// selected episode by key (after it has failed and left the queues).
+	epInfo := make(map[string]struct {
+		ep       domain.Episode
+		manifest string
+	}, len(selected))
+	for _, ep := range selected {
+		if mURL, ok := manifestMap[ep.Key]; ok {
+			epInfo[episodeKeyStr(ep.Key)] = struct {
+				ep       domain.Episode
+				manifest string
+			}{ep, mURL}
+		}
+	}
 
 	// Build the initial work list, preserving order and skipping episodes with
 	// no manifest URL.
 	newQueue := make([]*pendingEpisode, 0, len(selected))
 	for _, ep := range selected {
 		manifestURL, ok := manifestMap[ep.Key]
-		if !ok {
+		if !ok || manifestURL == "" {
 			log.Warn("no manifest URL for episode, skipping",
 				domain.F("episode", fmt.Sprintf("S%02dE%02d", ep.Key.Season, ep.Key.Episode)),
 			)
@@ -247,8 +287,38 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		}
 		pe.attempts++
 		epLabel := fmt.Sprintf("S%02dE%02d", pe.ep.Key.Season, pe.ep.Key.Episode)
+		ks := episodeKeyStr(pe.ep.Key)
 
-		res, err := e.attemptHLSEpisode(ctx, cfg, series, pe.ep, pe.manifest, posterPath)
+		// Give this episode its own cancelable context so a per-episode pause can
+		// stop just this download while its siblings keep going.
+		epCtx, epCancel := context.WithCancel(ctx)
+		mu.Lock()
+		epCancels[ks] = epCancel
+		mu.Unlock()
+
+		res, err := e.attemptHLSEpisode(epCtx, cfg, series, pe.ep, pe.manifest, posterPath)
+
+		mu.Lock()
+		delete(epCancels, ks)
+		pausedHere := pauseMark[ks]
+		delete(pauseMark, ks)
+		mu.Unlock()
+		epCancel() // release ctx resources
+
+		// A per-episode pause (this episode's own ctx was canceled while the whole
+		// run is still alive): hold it aside, keeping its partial segments, without
+		// counting a failure or burning a retry attempt. Success still wins if the
+		// download happened to finish in the same instant.
+		if pausedHere && res != epSuccess && ctx.Err() == nil {
+			pe.attempts--
+			pe.nextAt = time.Time{}
+			pe.lastErr = nil
+			mu.Lock()
+			pausedHold = append(pausedHold, pe)
+			mu.Unlock()
+			return
+		}
+
 		switch res {
 		case epSuccess:
 			mu.Lock()
@@ -265,9 +335,12 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 					domain.F("error", err.Error()),
 				)
 				// Budget exhausted — clean up the segment temp directory that
-				// was preserved across retries for resume.
-				if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
-					os.RemoveAll(outPath + ".ts.hls-tmp")
+				// was preserved across retries for resume (unless the run is being
+				// paused, where partial data is kept for a later resume).
+				if e.deps.Paused == nil || !e.deps.Paused() {
+					if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
+						os.RemoveAll(outPath + ".ts.hls-tmp")
+					}
 				}
 				mu.Lock()
 				failed++
@@ -277,6 +350,11 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				return
 			}
 			wait := e.backoffFor(pe.attempts)
+			// Capture everything read for the log/report BEFORE re-parking: once pe
+			// is back in retryQueue another worker may pick it up immediately (the
+			// retry backoff is zero in tests), so touching pe past the unlock races.
+			attempts := pe.attempts
+			key := pe.ep.Key
 			pe.lastErr = err
 			pe.nextAt = time.Now().Add(wait)
 			mu.Lock()
@@ -284,11 +362,11 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 			mu.Unlock()
 			log.Info("episode download interrupted, will retry later",
 				domain.F("episode", epLabel),
-				domain.F("attempt", pe.attempts),
+				domain.F("attempt", attempts),
 				domain.F("retry_in", wait.Round(time.Second).String()),
 				domain.F("error", err.Error()),
 			)
-			reportEpisodeDeferred(e.deps.ProgressReporter, pe.ep.Key, err, pe.attempts)
+			reportEpisodeDeferred(e.deps.ProgressReporter, key, err, attempts)
 
 		case epFatal:
 			if ctx.Err() != nil {
@@ -306,6 +384,149 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		}
 	}
 
+	// moveToFront promotes the episode matching key to the head of newQueue so it
+	// is picked up next. A deferred (parked) episode is pulled out of the retry
+	// queue and made immediately ready. No-op if the episode is already running,
+	// finished, or unknown. Caller must hold mu.
+	moveToFront := func(key domain.EpisodeKey) {
+		for i, pe := range newQueue {
+			if pe.ep.Key.Season == key.Season && pe.ep.Key.Episode == key.Episode {
+				newQueue = append(newQueue[:i], newQueue[i+1:]...)
+				newQueue = append([]*pendingEpisode{pe}, newQueue...)
+				return
+			}
+		}
+		for i, pe := range retryQueue {
+			if pe.ep.Key.Season == key.Season && pe.ep.Key.Episode == key.Episode {
+				retryQueue = append(retryQueue[:i], retryQueue[i+1:]...)
+				pe.nextAt = time.Time{} // skip the remaining backoff
+				newQueue = append([]*pendingEpisode{pe}, newQueue...)
+				return
+			}
+		}
+	}
+
+	// drainPrioritize applies all pending "download next" requests. Caller holds mu.
+	prioritize := e.deps.PrioritizeRequests
+	drainPrioritize := func() {
+		if prioritize == nil {
+			return
+		}
+		for {
+			select {
+			case key := <-prioritize:
+				moveToFront(key)
+			default:
+				return
+			}
+		}
+	}
+
+	// takeFromQueues removes the episode matching key from newQueue or retryQueue
+	// and returns it, or nil if it is not waiting (already in flight / held /
+	// finished). Caller holds mu.
+	takeFromQueues := func(key domain.EpisodeKey) *pendingEpisode {
+		for i, pe := range newQueue {
+			if pe.ep.Key.Season == key.Season && pe.ep.Key.Episode == key.Episode {
+				newQueue = append(newQueue[:i], newQueue[i+1:]...)
+				return pe
+			}
+		}
+		for i, pe := range retryQueue {
+			if pe.ep.Key.Season == key.Season && pe.ep.Key.Episode == key.Episode {
+				retryQueue = append(retryQueue[:i], retryQueue[i+1:]...)
+				return pe
+			}
+		}
+		return nil
+	}
+
+	// takeFromHold removes the held episode matching key and returns it (nil if
+	// not held). Caller holds mu.
+	takeFromHold := func(key domain.EpisodeKey) *pendingEpisode {
+		for i, pe := range pausedHold {
+			if pe.ep.Key.Season == key.Season && pe.ep.Key.Episode == key.Episode {
+				pe2 := pe
+				pausedHold = append(pausedHold[:i], pausedHold[i+1:]...)
+				return pe2
+			}
+		}
+		return nil
+	}
+
+	// inFlightOrQueued reports whether the episode is currently downloading,
+	// waiting, or held — i.e. NOT a candidate for live re-queue. Caller holds mu.
+	inFlightOrQueued := func(ks string) bool {
+		if epCancels[ks] != nil {
+			return true
+		}
+		for _, pe := range newQueue {
+			if episodeKeyStr(pe.ep.Key) == ks {
+				return true
+			}
+		}
+		for _, pe := range retryQueue {
+			if episodeKeyStr(pe.ep.Key) == ks {
+				return true
+			}
+		}
+		for _, pe := range pausedHold {
+			if episodeKeyStr(pe.ep.Key) == ks {
+				return true
+			}
+		}
+		return false
+	}
+
+	// hasSucceeded reports whether the episode already completed in this run, so a
+	// duplicate live retry can't re-download it and double-count success. Caller
+	// holds mu.
+	hasSucceeded := func(ks string) bool {
+		for _, o := range outcomes {
+			if o.Succeeded && episodeKeyStr(o.Key) == ks {
+				return true
+			}
+		}
+		return false
+	}
+
+	// applyPauseLocked holds an episode aside for a per-episode pause: a download
+	// already in flight has its own context canceled (and is marked so processOne
+	// parks it instead of failing it); a still-queued episode is pulled straight
+	// into the hold so a freed worker can't start it. Caller must hold mu.
+	pauseReq := e.deps.PauseRequests
+	applyPauseLocked := func(key domain.EpisodeKey) {
+		if winding {
+			return
+		}
+		ks := episodeKeyStr(key)
+		if c := epCancels[ks]; c != nil {
+			pauseMark[ks] = true // processOne will hold it when the attempt returns
+			c()                  // stop this episode's download now
+		} else if pe := takeFromQueues(key); pe != nil {
+			pausedHold = append(pausedHold, pe)
+		}
+	}
+
+	// drainPause applies every pause request that has already been delivered.
+	// Calling it in takeTask before dispatch means a pause the user has already
+	// sent is honored before a freed worker can start that episode — so a queued,
+	// paused episode is never even handed to the downloader. The live-control
+	// goroutine still handles pauses that arrive mid-download. Caller holds mu.
+	drainPause := func() {
+		if pauseReq == nil {
+			return
+		}
+		for {
+			select {
+			case key := <-pauseReq:
+				applyPauseLocked(key)
+			default:
+				return
+			}
+		}
+	}
+
 	// takeTask picks the next runnable episode under the lock. It returns
 	// (task, wait, done): a task to run now; or no task with a wait hint (sleep
 	// then re-poll — e.g. a retry still inside its backoff window, or other
@@ -314,6 +535,8 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	takeTask := func() (*pendingEpisode, time.Duration, bool) {
 		mu.Lock()
 		defer mu.Unlock()
+		drainPrioritize()
+		drainPause()
 		if len(newQueue) > 0 {
 			pe := newQueue[0]
 			newQueue = newQueue[1:]
@@ -336,8 +559,71 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		if inFlight > 0 {
 			return nil, 200 * time.Millisecond, false
 		}
+		// Nothing runnable, but episodes are paused: keep the run alive so they can
+		// be resumed. Poll periodically (and stay responsive to a resume/cancel).
+		if len(pausedHold) > 0 {
+			return nil, 500 * time.Millisecond, false
+		}
 		return nil, 0, true
 	}
+
+	// Live-control goroutine: applies pause / resume / retry requests promptly,
+	// even mid-download (a pause cancels the episode's own context; a resume or
+	// retry re-queues it). It runs alongside the workers and stops when the run
+	// ends. Requests for episodes that aren't applicable are no-ops.
+	resumeReq := e.deps.ResumeRequests
+	retryReq := e.deps.RetryRequests
+	stopCtrl := make(chan struct{})
+	ctrlDone := make(chan struct{})
+	go func() {
+		defer close(ctrlDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCtrl:
+				return
+			case key := <-pauseReq:
+				mu.Lock()
+				applyPauseLocked(key)
+				mu.Unlock()
+			case key := <-resumeReq:
+				ks := episodeKeyStr(key)
+				mu.Lock()
+				if !winding {
+					delete(pauseMark, ks)
+					if pe := takeFromHold(key); pe != nil {
+						pe.nextAt = time.Time{}
+						newQueue = append([]*pendingEpisode{pe}, newQueue...)
+					}
+				}
+				mu.Unlock()
+			case key := <-retryReq:
+				ks := episodeKeyStr(key)
+				mu.Lock()
+				// Skip when the run is winding down (no worker would pick it up — it
+				// would otherwise be re-queued only to be swept as failed), when the
+				// episode is already active/queued/held, or when it already SUCCEEDED
+				// (a duplicate retry must not re-download and double-count it).
+				if !winding && !inFlightOrQueued(ks) && !hasSucceeded(ks) {
+					if info, ok := epInfo[ks]; ok {
+						// Undo the prior failure tally so totals stay correct.
+						for i, o := range outcomes {
+							if episodeKeyStr(o.Key) == ks && !o.Succeeded {
+								outcomes = append(outcomes[:i], outcomes[i+1:]...)
+								if failed > 0 {
+									failed--
+								}
+								break
+							}
+						}
+						newQueue = append([]*pendingEpisode{{ep: info.ep, manifest: info.manifest}}, newQueue...)
+					}
+				}
+				mu.Unlock()
+			}
+		}
+	}()
 
 	// Download episodes in parallel: cfg.MaxConcurrency episodes at a time.
 	// Segment concurrency within each episode is bounded separately by the HLS
@@ -373,28 +659,45 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	}
 	wg.Wait()
 
-	// Episodes still parked in the retry queue when interrupted count as
-	// failures for the summary. Their segment temp directories are cleaned up
-	// because no further resume will happen after cancellation.
-	for _, pe := range retryQueue {
-		failed++
-		err := pe.lastErr
-		if err == nil {
-			err = ctx.Err()
-		}
-		outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
-		if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
-			os.RemoveAll(outPath + ".ts.hls-tmp")
-		}
-	}
+	// Workers have exited; mark the run as winding down so the control goroutine
+	// stops accepting late pause/resume/retry requests (they'd otherwise mutate
+	// the queues with no worker left to act on them). Then stop it and wait for it
+	// to exit before the sweep, so it can't race the final tally.
+	mu.Lock()
+	winding = true
+	mu.Unlock()
+	close(stopCtrl)
+	<-ctrlDone
 
-	// Episodes that were queued but never started (newQueue not drained due to
-	// cancellation) are also accounted so succeeded+failed+skipped == Total.
-	for _, pe := range newQueue {
-		failed++
-		err := ctx.Err()
-		outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+	// When the run is being paused (not canceled), keep partial segment data so a
+	// later resume continues from where it stopped instead of restarting.
+	jobPaused := e.deps.Paused != nil && e.deps.Paused()
+
+	// On a PAUSE, every not-yet-finished episode is preserved for resume — it is
+	// pending, not failed. Counting it as a failure would make a paused job's
+	// summary read "N failed" while its rows correctly read "paused", and those
+	// episodes succeed on resume. So when paused we keep their partial data and
+	// leave them OUT of the failed tally/outcomes; on a real cancel they count as
+	// failures and their temp segments are cleaned up.
+	sweep := func(q []*pendingEpisode) {
+		for _, pe := range q {
+			if jobPaused {
+				continue // preserved-for-resume: not a failure, keep .hls-tmp
+			}
+			failed++
+			err := pe.lastErr
+			if err == nil {
+				err = ctx.Err()
+			}
+			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
+			if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
+				os.RemoveAll(outPath + ".ts.hls-tmp")
+			}
+		}
 	}
+	sweep(retryQueue) // in-flight episodes re-parked here on stop
+	sweep(newQueue)   // never-started episodes
+	sweep(pausedHold) // episodes held aside by a per-episode pause
 
 	result := domain.RunResult{
 		Total:     len(selected),
@@ -407,6 +710,13 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		return result, err
 	}
 	return result, nil
+}
+
+// episodeKeyStr formats an episode key as "S{season}E{episode}" for use as a map
+// key in the live-control state (matches the season+episode identity used by the
+// pause/resume/retry requests).
+func episodeKeyStr(k domain.EpisodeKey) string {
+	return fmt.Sprintf("S%dE%d", k.Season, k.Episode)
 }
 
 // maxEpisodeAttempts bounds how many times the engine reattempts a single

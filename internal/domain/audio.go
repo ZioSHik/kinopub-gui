@@ -43,11 +43,43 @@ type AudioPreference struct {
 	// track is chosen, preferring tracks whose language matches a Prefer hint;
 	// ties break toward the track highest in the source list.
 	Prefer []string
+
+	// Specs, when non-empty, is an EXACT track selection that supersedes
+	// Include/Exclude. A track is kept when it satisfies ANY spec. Each spec is
+	// an AND of Require tokens (all must be present) and a NOT of Forbid tokens
+	// (none may be present). This is precise enough to distinguish codec variants
+	// of one voiceover — e.g. the plain stereo dub (Require:["tvshows"],
+	// Forbid:["ac3"]) vs. its 5.1 sibling (Require:["tvshows","ac3"]) — which the
+	// substring Include/Exclude filter cannot express. Set by the GUI picker.
+	Specs []AudioSpec
+}
+
+// AudioSpec is one exact-match rule for an audio track: keep the track iff it
+// contains every Require token and none of the Forbid tokens (all matched via
+// audioMatches: case-insensitive name+language substring or canonical language).
+type AudioSpec struct {
+	Require []string
+	Forbid  []string
+}
+
+// matches reports whether track t satisfies this spec.
+func (s AudioSpec) matches(t AudioTrackInfo) bool {
+	for _, r := range s.Require {
+		if !audioMatches(t, r) {
+			return false
+		}
+	}
+	for _, f := range s.Forbid {
+		if audioMatches(t, f) {
+			return false
+		}
+	}
+	return len(s.Require) > 0 // an empty Require matches nothing (avoids keep-all by accident)
 }
 
 // IsAll reports whether the preference keeps every available track unchanged.
 func (p AudioPreference) IsAll() bool {
-	return len(p.Include) == 0 && len(p.Exclude) == 0
+	return len(p.Include) == 0 && len(p.Exclude) == 0 && len(p.Specs) == 0
 }
 
 // langAliases maps common language spellings to a canonical ISO 639-2 code so
@@ -131,6 +163,37 @@ func preferRank(t AudioTrackInfo, prefer []string) int {
 func SelectAudio(tracks []AudioTrackInfo, pref AudioPreference) []int {
 	if len(tracks) == 0 {
 		return nil
+	}
+
+	// 0. Exact spec selection (from the GUI picker) supersedes Include/Exclude.
+	// Keep every track matching any spec; if none match (the chosen variant is
+	// absent this episode), fall back to the single best track by Prefer rank so
+	// the output always carries audio.
+	if len(pref.Specs) > 0 {
+		matched := make([]int, 0, len(tracks))
+		for i, t := range tracks {
+			for _, s := range pref.Specs {
+				if s.matches(t) {
+					matched = append(matched, i)
+					break
+				}
+			}
+		}
+		if len(matched) > 0 {
+			return matched
+		}
+		best := make([]int, len(tracks))
+		for i := range tracks {
+			best[i] = i
+		}
+		sort.SliceStable(best, func(a, b int) bool {
+			ra, rb := preferRank(tracks[best[a]], pref.Prefer), preferRank(tracks[best[b]], pref.Prefer)
+			if ra != rb {
+				return ra < rb
+			}
+			return best[a] < best[b]
+		})
+		return []int{best[0]}
 	}
 
 	// 1. Apply excludes.

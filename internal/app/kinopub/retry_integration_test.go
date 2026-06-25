@@ -69,8 +69,8 @@ func (f *fakePageScraper) ExtractAllSeasons(context.Context, string) (*domain.Pa
 
 func makePlaylist(episodes int) *domain.PagePlaylist {
 	pl := &domain.PagePlaylist{
-		ItemID: 42,
-		Title:  "Test Series",
+		ItemID:  42,
+		Title:   "Test Series",
 		Seasons: []domain.PageSeason{{Season: 1, Count: episodes}},
 	}
 	for i := 1; i <= episodes; i++ {
@@ -211,6 +211,37 @@ func TestRunHLS_FatalErrorNotRetried(t *testing.T) {
 	}
 	if len(rec.deferred) != 0 {
 		t.Errorf("fatal error should not defer, got %d deferrals", len(rec.deferred))
+	}
+}
+
+// A per-episode retry (cfg.RetryOnly) re-downloads ONLY the requested episode,
+// not every not-yet-completed one — the fix for "retry 1 episode, 2 download".
+func TestRunHLS_RetryOnlyNarrowsToOneEpisode(t *testing.T) {
+	hls := newFakeHLS(nil) // every episode succeeds
+	e, _, ss := newRetryTestEngine(hls, &fakePageScraper{playlist: makePlaylist(3)})
+
+	cfg := retryTestConfig()
+	cfg.RetryOnly = []domain.EpisodeKey{{Season: 1, Episode: 2}}
+
+	res, err := e.runHLS(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("runHLS error: %v", err)
+	}
+	if res.Total != 1 || res.Succeeded != 1 {
+		t.Errorf("Total=%d Succeeded=%d, want 1/1 (only the retried episode)", res.Total, res.Succeeded)
+	}
+	for ep := 1; ep <= 3; ep++ {
+		k := domain.EpisodeKey{Series: "42", Season: 1, Episode: ep}
+		want := 0
+		if ep == 2 {
+			want = 1
+		}
+		if got := hls.calls[k]; got != want {
+			t.Errorf("episode %d downloaded %d times, want %d", ep, got, want)
+		}
+	}
+	if !ss.completed[domain.EpisodeKey{Series: "42", Season: 1, Episode: 2}] {
+		t.Error("retried episode 2 should be completed")
 	}
 }
 

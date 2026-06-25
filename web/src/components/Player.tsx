@@ -36,6 +36,8 @@ export interface PlayerEpisode {
 const AUDIO_PREF_KEY = "kp.player.audioPref";
 const SKIP_SECONDS = 15;
 const HIDE_DELAY = 2600;
+// How often (in playback seconds) to report progress to kino.pub while playing.
+const MARK_INTERVAL = 20;
 
 function audioKey(name: string): string {
   return name.replace(/^\s*\d+\.\s*/, "").trim().toLowerCase();
@@ -129,6 +131,27 @@ export function Player({
   const [isFs, setIsFs] = useState(false);
   const [chrome, setChrome] = useState(true); // controls visible
 
+  // Resume: saved position (seconds) for this episode and whether to ask before
+  // playing. resumeRef mirrors resumeAt for use inside the load effect's hls
+  // callbacks (which capture a stale render).
+  const [resumeAt, setResumeAt] = useState(0);
+  const [askResume, setAskResume] = useState(false);
+  const resumeRef = useRef(0);
+
+  // Progress reporting. markRef is reassigned every render so it always sees the
+  // current id/season/episode; lastMark throttles to MARK_INTERVAL playback secs.
+  const markRef = useRef<(force: boolean) => void>(() => {});
+  const lastMark = useRef(-1);
+  markRef.current = (force: boolean) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const time = Math.floor(v.currentTime);
+    if (time <= 0) return;
+    if (!force && lastMark.current >= 0 && Math.abs(time - lastMark.current) < MARK_INTERVAL) return;
+    lastMark.current = time;
+    void api.markTime(id, time, season, episode).catch(() => {});
+  };
+
   // Episode navigation (serials).
   const hasList = !!episodes && episodes.length > 1;
   const idx =
@@ -208,13 +231,17 @@ export function Player({
     if (!v) return;
     const onPlay = () => setPaused(false);
     const onPause = () => setPaused(true);
-    const onTime = () => setCurrent(v.currentTime);
+    const onTime = () => {
+      setCurrent(v.currentTime);
+      markRef.current(false);
+    };
     const onDur = () => setDuration(isFinite(v.duration) ? v.duration : 0);
     const onVol = () => {
       setMuted(v.muted);
       setVolume(v.volume);
     };
     const onEnded = () => {
+      markRef.current(true);
       const n = nextRef.current;
       if (n) onChangeRef.current?.(n.season, n.episode);
     };
@@ -236,6 +263,9 @@ export function Player({
     };
   }, []);
 
+  // Final progress report when the player closes, so the last position sticks.
+  useEffect(() => () => markRef.current(true), []);
+
   // ---- load the episode (fresh hls per episode) -----------------------------
   useEffect(() => {
     let alive = true;
@@ -248,6 +278,16 @@ export function Player({
     setError(null);
     setAudioTracks([]);
     setLevels([]);
+    setAskResume(false);
+    lastMark.current = -1;
+    resumeRef.current = 0;
+
+    // Start playback, unless there's a saved position worth resuming — then ask
+    // first (the <video> has no autoPlay, so it stays paused until the choice).
+    const maybeStart = () => {
+      if (resumeRef.current > 10) setAskResume(true);
+      else void video.play().catch(() => {});
+    };
 
     const applyRememberedAudio = (tracks: AudioOpt[], cur: number, select: (i: number) => void) => {
       const pref = localStorage.getItem(AUDIO_PREF_KEY);
@@ -306,7 +346,7 @@ export function Player({
           // downgrades when the connection drops and climbs back when it recovers.
           hls.currentLevel = -1;
           setActiveLevel(-1);
-          void video.play().catch(() => {});
+          maybeStart();
         });
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => alive && hls && readAudio(hls));
         hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, () => alive && hls && setActiveAudio(hls.audioTrack));
@@ -328,7 +368,7 @@ export function Player({
         const onMeta = () => {
           if (!alive) return;
           setLoading(false);
-          void video.play().catch(() => {});
+          maybeStart();
         };
         video.addEventListener("loadedmetadata", onMeta, { once: true });
         video.src = src;
@@ -343,6 +383,9 @@ export function Player({
       .then((s) => {
         if (!alive) return;
         setHeading(s.title || title || "");
+        const rt = Math.max(0, Math.floor(s.resumeTime || 0));
+        resumeRef.current = rt;
+        setResumeAt(rt);
         start(s.playUrl);
       })
       .catch((e) => alive && setError(e.message || tRef.current("Failed to load stream")));
@@ -391,6 +434,18 @@ export function Player({
   };
   const goTo = (ep: PlayerEpisode | null) => ep && onChangeEpisode?.(ep.season, ep.episode);
 
+  const startPlaybackAt = (seconds: number) => {
+    setAskResume(false);
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.currentTime = seconds;
+    } catch {
+      /* metadata not ready yet — play from wherever we are */
+    }
+    void v.play().catch(() => {});
+  };
+
   const pickAudio = (i: number) => {
     const name = audioTracks.find((a) => a.id === i)?.name;
     if (name) {
@@ -433,8 +488,9 @@ export function Player({
         }}
         style={{ cursor: chrome ? "default" : "none" }}
       >
-        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video ref={videoRef} autoPlay className="h-full w-full bg-black" onClick={togglePlay} />
+        {/* No autoPlay: playback is started explicitly so a saved position can be
+            offered first. eslint-disable-next-line jsx-a11y/media-has-caption */}
+        <video ref={videoRef} className="h-full w-full bg-black" onClick={togglePlay} />
 
         {loading && !error && (
           <div className="pointer-events-none absolute inset-0 grid place-items-center bg-black/30 text-white">
@@ -443,6 +499,24 @@ export function Player({
         )}
         {error && (
           <div className="absolute inset-0 grid place-items-center bg-black/70 p-6 text-center text-sm text-ember-300">{error}</div>
+        )}
+
+        {/* Resume prompt: shown when the title has a saved position. */}
+        {askResume && !error && (
+          <div className="absolute inset-0 z-20 grid place-items-center bg-black/75 p-6 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-ink-900/95 p-6 text-center shadow-2xl">
+              <p className="text-base font-semibold text-slate-100">{t("Continue watching?")}</p>
+              <p className="mt-1 text-sm text-slate-400">{t("You stopped at {time}", { time: fmtTime(resumeAt) })}</p>
+              <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-center">
+                <button className="btn-primary justify-center" onClick={() => startPlaybackAt(resumeRef.current)}>
+                  <Play className="h-4 w-4" /> {t("Continue from {time}", { time: fmtTime(resumeAt) })}
+                </button>
+                <button className="btn-ghost justify-center" onClick={() => startPlaybackAt(0)}>
+                  <RotateCcw className="h-4 w-4" /> {t("Start over")}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Top gradient: title + close */}

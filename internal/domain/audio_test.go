@@ -84,6 +84,49 @@ func TestSelectAudio_IncludePlusExclude(t *testing.T) {
 	}
 }
 
+// The screenshot bug: one studio ("TVShows") ships a plain stereo dub AND an
+// AC3 5.1 sibling. Selecting just the plain one must keep exactly it, not both.
+func TestSelectAudio_SpecsSeparatePlainFromAC3(t *testing.T) {
+	tracks := []AudioTrackInfo{
+		{Index: 0, Name: "01. Многоголосый. TVShows (RUS)", Language: "rus"},
+		{Index: 1, Name: "06. Многоголосый. TVShows (RUS) AC3", Language: "rus"},
+		{Index: 2, Name: "03. Оригинал (JPN)", Language: "jpn"},
+	}
+
+	// Plain only: REQUIRE the studio, FORBID the codec → keeps index 0 alone.
+	plain := AudioPreference{Specs: []AudioSpec{{Require: []string{"TVShows"}, Forbid: []string{"ac3"}}}}
+	if got := SelectAudio(tracks, plain); !reflect.DeepEqual(got, []int{0}) {
+		t.Errorf("plain-only spec = %v, want [0]", got)
+	}
+
+	// AC3 only: REQUIRE studio + codec → keeps index 1 alone.
+	ac3 := AudioPreference{Specs: []AudioSpec{{Require: []string{"TVShows", "ac3"}}}}
+	if got := SelectAudio(tracks, ac3); !reflect.DeepEqual(got, []int{1}) {
+		t.Errorf("ac3-only spec = %v, want [1]", got)
+	}
+
+	// Both variants explicitly selected → both kept.
+	both := AudioPreference{Specs: []AudioSpec{
+		{Require: []string{"TVShows"}, Forbid: []string{"ac3"}},
+		{Require: []string{"TVShows", "ac3"}},
+	}}
+	if got := SelectAudio(tracks, both); !reflect.DeepEqual(got, []int{0, 1}) {
+		t.Errorf("both-variants specs = %v, want [0 1]", got)
+	}
+
+	// A spec that matches nothing this episode falls back to a single track (not
+	// empty, never all).
+	miss := AudioPreference{Specs: []AudioSpec{{Require: []string{"NoSuchStudio"}}}}
+	if got := SelectAudio(tracks, miss); len(got) != 1 {
+		t.Errorf("missing spec fallback = %v, want exactly one track", got)
+	}
+
+	// Specs make the preference non-"all".
+	if plain.IsAll() {
+		t.Error("a preference with Specs must not report IsAll")
+	}
+}
+
 func TestSelectAudio_Empty(t *testing.T) {
 	if got := SelectAudio(nil, AudioPreference{Include: []string{"x"}}); got != nil {
 		t.Fatalf("nil tracks should yield nil, got %v", got)

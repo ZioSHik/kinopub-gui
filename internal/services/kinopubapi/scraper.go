@@ -75,6 +75,8 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 		ItemID: id,
 		Title:  item.Title,
 		Poster: item.Posters.Best(),
+		Type:   item.Type,
+		Genres: genreTitles(item.Genres),
 	}
 	seasonCounts := map[int]int{}
 
@@ -124,6 +126,20 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 		pl.Seasons = append(pl.Seasons, domain.PageSeason{Season: season, Count: count})
 	}
 	return pl, nil
+}
+
+// genreTitles flattens a list of genre NamedIDs to their titles.
+func genreTitles(genres []NamedID) []string {
+	if len(genres) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(genres))
+	for _, g := range genres {
+		if g.Title != "" {
+			out = append(out, g.Title)
+		}
+	}
+	return out
 }
 
 // bestManifest returns the HLS master URL for the highest-resolution file. When

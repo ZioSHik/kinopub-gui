@@ -294,8 +294,10 @@ func TestProperty43_ApplyDefaultsFillsZeroFields(t *testing.T) {
 		if cfg.MaxRetries == 0 {
 			t.Fatal("MaxRetries should be non-zero after ApplyDefaults")
 		}
-		if cfg.Verbosity == 0 {
-			t.Fatal("Verbosity should be non-zero after ApplyDefaults")
+		// VerbosityNormal is the zero value, so an unset config defaults to normal
+		// (it is no longer "non-zero" — quiet is the non-zero value now).
+		if cfg.Verbosity != domain.VerbosityNormal {
+			t.Fatalf("Verbosity should default to VerbosityNormal, got %d", cfg.Verbosity)
 		}
 		if cfg.FFmpegPath == "" {
 			t.Fatal("FFmpegPath should be non-empty after ApplyDefaults")
@@ -315,13 +317,15 @@ func TestProperty43_ApplyDefaultsFillsZeroFields(t *testing.T) {
 func TestProperty43_ApplyDefaultsDoesNotOverrideExplicit(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate non-zero values for all defaultable fields.
-		// Note: ApplyDefaults uses zero-value detection, so we only test with
-		// non-zero values (VerbosityQuiet=0 and ContainerMKV=0 are zero values
-		// and would be treated as "not set" by ApplyDefaults — this is by design).
+		// Note: ApplyDefaults uses zero-value detection. ContainerMKV=0 equals its
+		// own default, so it is excluded. Verbosity now has VerbosityNormal=0 as
+		// its zero value, so the non-zero values Quiet and Verbose must both
+		// survive ApplyDefaults unchanged — Quiet being the regression that
+		// motivated making Normal the zero value.
 		conc := rapid.IntRange(1, 16).Draw(t, "concurrency")
 		retries := rapid.IntRange(1, 20).Draw(t, "retries")
 		verbosity := rapid.SampledFrom([]domain.Verbosity{
-			domain.VerbosityNormal, domain.VerbosityVerbose,
+			domain.VerbosityQuiet, domain.VerbosityVerbose,
 		}).Draw(t, "verbosity")
 		ffmpegPath := rapid.StringMatching(`/[a-z]+/[a-z]+`).Draw(t, "ffmpegPath")
 		container := rapid.SampledFrom([]domain.Container{

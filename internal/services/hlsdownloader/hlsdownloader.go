@@ -388,7 +388,7 @@ func (d *Downloader) downloadEpisodeInternal(
 
 	// downloadTrack fetches every segment of a single track into segDir (with
 	// resume + bounded concurrency), then concatenates them into outPath.
-	downloadTrack := func(ctx context.Context, trackIdx int, segments []Segment, segDir, outPath string) error {
+	downloadTrack := func(ctx context.Context, trackIdx int, initURI string, segments []Segment, segDir, outPath string) error {
 		if err := os.MkdirAll(segDir, 0755); err != nil {
 			return fmt.Errorf("create segment dir: %w", err)
 		}
@@ -457,7 +457,19 @@ func (d *Downloader) downloadEpisodeInternal(
 			return ctx.Err()
 		}
 
-		return d.concatenateSegmentsDir(segments, segDir, outPath)
+		// fMP4/CMAF tracks need the EXT-X-MAP init segment fetched and written
+		// ahead of the media fragments. Resume-safe: skip if already on disk.
+		initPath := ""
+		if initURI != "" {
+			initPath = filepath.Join(segDir, "init.mp4")
+			if info, statErr := os.Stat(initPath); statErr != nil || info.Size() == 0 {
+				if _, err := d.downloadSegment(ctx, Segment{URL: initURI, Index: -1}, initPath); err != nil {
+					return fmt.Errorf("init segment: %w", err)
+				}
+			}
+		}
+
+		return d.concatenateSegmentsDir(initPath, segments, segDir, outPath)
 	}
 
 	// 6. Download all tracks (video + audio) in parallel. Segments within and
@@ -481,7 +493,7 @@ func (d *Downloader) downloadEpisodeInternal(
 	trackWG.Add(1)
 	go func() {
 		defer trackWG.Done()
-		if err := downloadTrack(ctx, 0, videoPlaylist.Segments, videoDir, videoPath); err != nil {
+		if err := downloadTrack(ctx, 0, videoPlaylist.InitURI, videoPlaylist.Segments, videoDir, videoPath); err != nil {
 			recordErr(fmt.Errorf("video track: %w", err))
 		}
 	}()
@@ -492,7 +504,7 @@ func (d *Downloader) downloadEpisodeInternal(
 		go func(ai int, aj audioJob) {
 			defer trackWG.Done()
 			audioDir := filepath.Join(tmpDir, fmt.Sprintf("audio_%d", ai))
-			if err := downloadTrack(ctx, 1+ai, aj.playlist.Segments, audioDir, aj.outFile); err != nil {
+			if err := downloadTrack(ctx, 1+ai, aj.playlist.InitURI, aj.playlist.Segments, audioDir, aj.outFile); err != nil {
 				recordErr(fmt.Errorf("audio track %d: %w", ai, err))
 				return
 			}
@@ -618,14 +630,28 @@ func (d *Downloader) fetchSegment(ctx context.Context, segURL, outPath string) (
 	return n, nil
 }
 
-// concatenateSegmentsDir joins all segment .ts files from segDir into outPath.
-// HLS .ts segments are MPEG-TS and can be concatenated byte-by-byte.
-func (d *Downloader) concatenateSegmentsDir(segments []Segment, segDir, outPath string) error {
+// concatenateSegmentsDir joins all segment files from segDir into outPath. HLS
+// MPEG-TS segments concatenate byte-by-byte; fMP4/CMAF segments do too, but only
+// once the EXT-X-MAP init segment (ftyp+moov) is written first — initPath points
+// to it (empty for plain TS streams).
+func (d *Downloader) concatenateSegmentsDir(initPath string, segments []Segment, segDir, outPath string) error {
 	out, err := os.Create(outPath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
+
+	if initPath != "" {
+		f, err := os.Open(initPath)
+		if err != nil {
+			return fmt.Errorf("open init segment: %w", err)
+		}
+		_, err = io.Copy(out, f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("copy init segment: %w", err)
+		}
+	}
 
 	for _, seg := range segments {
 		segPath := filepath.Join(segDir, fmt.Sprintf("seg_%05d.ts", seg.Index))

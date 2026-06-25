@@ -90,6 +90,19 @@ export function SettingsPage() {
           <Field label={t("Proxy")}>
             <input className="input" placeholder="socks5://127.0.0.1:1080" value={form.proxy} onChange={(e) => set("proxy", e.target.value)} />
           </Field>
+          <Field label={t("Max simultaneous downloads")}>
+            <input
+              type="number"
+              min={0}
+              max={16}
+              className="input"
+              value={form.maxActiveJobs}
+              onChange={(e) => set("maxActiveJobs", e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              {t("0 = no limit. When set, extra downloads wait in a queue you can reorder.")}
+            </p>
+          </Field>
         </div>
 
         <Toggle label={t("No chunked download by default")} hint={t("Stream everything through ffmpeg")} checked={form.noChunked} onChange={(v) => set("noChunked", v)} />

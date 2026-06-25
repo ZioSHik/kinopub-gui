@@ -11,7 +11,7 @@ func TestAudioRenditionsFor_DeduplicatesMixedCodecTwins(t *testing.T) {
 			{GroupID: "audio1080", Name: "02. Дубляж. Невафильм (RUS)", Language: "rus", URI: "a1"},
 			{GroupID: "audio1080", Name: "02. Дубляж. Невафильм (RUS)", Language: "rus", URI: "a2"}, // HEVC twin
 			{GroupID: "audio1080", Name: "07. Оригинал (ENG)", Language: "eng", URI: "a3"},
-			{GroupID: "audio1080", Name: "07. Оригинал (ENG)", Language: "eng", URI: "a4"}, // HEVC twin
+			{GroupID: "audio1080", Name: "07. Оригинал (ENG)", Language: "eng", URI: "a4"},         // HEVC twin
 			{GroupID: "audio720", Name: "02. Дубляж. Невафильм (RUS)", Language: "rus", URI: "b1"}, // other group
 		},
 	}

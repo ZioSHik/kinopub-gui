@@ -156,6 +156,27 @@ func (c *Client) Collections(ctx context.Context, sort string, page int) ([]Coll
 	return out.Items, err
 }
 
+// MarkTime records playback progress so the title shows up in History and the
+// continue-watching list, and so the next open can resume. video is the 1-based
+// video number (the episode number for serials, 1 for movies); season is 0 for
+// movies; seconds is the current playback position.
+func (c *Client) MarkTime(ctx context.Context, id string, video, season, seconds int) error {
+	if video <= 0 {
+		video = 1
+	}
+	q := url.Values{}
+	q.Set("id", id)
+	q.Set("video", strconv.Itoa(video))
+	if season > 0 {
+		q.Set("season", strconv.Itoa(season))
+	}
+	q.Set("time", strconv.Itoa(seconds))
+	var out struct {
+		Status int `json:"status"`
+	}
+	return c.get(ctx, "watching/marktime", q, &out)
+}
+
 // Countries lists countries for the filter (mirrors Genres).
 func (c *Client) Countries(ctx context.Context) ([]NamedID, error) {
 	var out struct {

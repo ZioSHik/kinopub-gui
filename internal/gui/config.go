@@ -30,6 +30,10 @@ type Settings struct {
 	NoChunked     bool     `json:"noChunked"`
 	Theme         string   `json:"theme"`
 	LibraryDirs   []string `json:"libraryDirs"`
+	// MaxActiveJobs bounds how many downloads run at once; extra ones wait in a
+	// reorderable queue. 0 means no limit (every download starts immediately,
+	// the default), in which case the queue/priority controls never engage.
+	MaxActiveJobs int `json:"maxActiveJobs"`
 }
 
 func defaultSettings() Settings {
@@ -39,14 +43,15 @@ func defaultSettings() Settings {
 		out = filepath.Join(home, "Downloads", "kinopub")
 	}
 	return Settings{
-		OutputPath:  out,
-		Quality:     "1080p",
-		Container:   "mkv",
-		Concurrency: 2,
-		Retries:     5,
-		Verbosity:   "normal",
-		Theme:       "cinematic",
-		LibraryDirs: nil,
+		OutputPath:    out,
+		Quality:       "1080p",
+		Container:     "mkv",
+		Concurrency:   2,
+		Retries:       5,
+		Verbosity:     "normal",
+		Theme:         "cinematic",
+		LibraryDirs:   nil,
+		MaxActiveJobs: 0, // unlimited by default — no behavior change until set
 	}
 }
 
@@ -113,6 +118,13 @@ func (s *settingsStore) load() {
 		merged.Theme = loaded.Theme
 	}
 	merged.LibraryDirs = loaded.LibraryDirs
+	merged.MaxActiveJobs = loaded.MaxActiveJobs
+	if merged.MaxActiveJobs < 0 {
+		merged.MaxActiveJobs = 0
+	}
+	if merged.MaxActiveJobs > 16 {
+		merged.MaxActiveJobs = 16
+	}
 	s.cur = merged
 }
 
@@ -141,6 +153,12 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 	if in.Container != "mp4" {
 		in.Container = "mkv"
 	}
+	if in.MaxActiveJobs < 0 {
+		in.MaxActiveJobs = 0
+	}
+	if in.MaxActiveJobs > 16 {
+		in.MaxActiveJobs = 16
+	}
 	s.cur = in
 	if s.path == "" {
 		return s.cur, nil
@@ -153,6 +171,13 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 		return s.cur, err
 	}
 	return s.cur, os.WriteFile(s.path, data, 0o644)
+}
+
+// AudioSpecDTO is one exact audio-track selection rule sent by the GUI picker:
+// keep a track that contains every Require token and none of the Forbid tokens.
+type AudioSpecDTO struct {
+	Require []string `json:"require"`
+	Forbid  []string `json:"forbid"`
 }
 
 // RunRequest is the JSON body the UI sends to start a download or run a preview.
@@ -172,14 +197,19 @@ type RunRequest struct {
 	// Episodes so the exact picked set downloads.
 	EpisodeKeys []string `json:"episodeKeys"`
 	Audio       string   `json:"audio"`
-	AudioMenu   bool     `json:"audioMenu"`
-	Force       bool     `json:"force"`
-	NoChunked   bool     `json:"noChunked"`
-	DryRun      bool     `json:"dryRun"`
-	FFmpegArgs  string   `json:"ffmpegArgs"`
-	FFmpegPath  string   `json:"ffmpegPath"`
-	UserAgent   string   `json:"userAgent"`
-	Verbosity   string   `json:"verbosity"`
+	// AudioSpecs is an exact audio-track selection from the GUI picker. When
+	// present it supersedes Audio: each spec keeps tracks containing all Require
+	// tokens and none of the Forbid tokens, which precisely separates codec
+	// variants of one voiceover (plain stereo vs. its AC3 5.1 sibling).
+	AudioSpecs []AudioSpecDTO `json:"audioSpecs"`
+	AudioMenu  bool           `json:"audioMenu"`
+	Force      bool           `json:"force"`
+	NoChunked  bool           `json:"noChunked"`
+	DryRun     bool           `json:"dryRun"`
+	FFmpegArgs string         `json:"ffmpegArgs"`
+	FFmpegPath string         `json:"ffmpegPath"`
+	UserAgent  string         `json:"userAgent"`
+	Verbosity  string         `json:"verbosity"`
 }
 
 // buildRunConfig translates a RunRequest into a validated domain.RunConfig.
@@ -212,6 +242,13 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	audioPref, err := kinopub.ParseAudioPreference(req.Audio)
 	if err != nil {
 		return domain.RunConfig{}, err
+	}
+	// An exact picker selection supersedes the substring filter.
+	for _, s := range req.AudioSpecs {
+		if len(s.Require) == 0 {
+			continue
+		}
+		audioPref.Specs = append(audioPref.Specs, domain.AudioSpec{Require: s.Require, Forbid: s.Forbid})
 	}
 
 	ua := strings.TrimSpace(req.UserAgent)

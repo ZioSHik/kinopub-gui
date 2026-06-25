@@ -6,10 +6,13 @@ package gui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
@@ -33,6 +36,11 @@ func buildEngineDeps(
 	logger domain.Logger,
 	reporter domain.ProgressReporter,
 	chooser domain.AudioChooser,
+	prioritize <-chan domain.EpisodeKey,
+	pause <-chan domain.EpisodeKey,
+	resume <-chan domain.EpisodeKey,
+	retry <-chan domain.EpisodeKey,
+	paused func() bool,
 ) (kinopub.Dependencies, error) {
 	proxyProv, err := proxyprovider.New(cfg.ProxyURL)
 	if err != nil {
@@ -99,6 +107,11 @@ func buildEngineDeps(
 	if chooser != nil {
 		deps.AudioChooser = chooser
 	}
+	deps.PrioritizeRequests = prioritize
+	deps.PauseRequests = pause
+	deps.ResumeRequests = resume
+	deps.RetryRequests = retry
+	deps.Paused = paused
 
 	return deps, nil
 }
@@ -111,7 +124,10 @@ func (realClock) Sleep(d time.Duration)                  { time.Sleep(d) }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // makeRunFunc executes a command, streaming stdout to the provided writer.
-// ffmpeg stderr is discarded — progress arrives via -progress pipe:1 on stdout.
+// Progress arrives via -progress pipe:1 on stdout; ffmpeg writes the actual
+// error message to stderr, so we keep its tail and fold it into the returned
+// error on failure — otherwise a remux failure surfaces as a bare, unactionable
+// "exit status N" with no clue why.
 func makeRunFunc() downloader.RunFunc {
 	return func(ctx context.Context, name string, args, env []string, stdout io.Writer) error {
 		cmd := exec.CommandContext(ctx, name, args...)
@@ -119,7 +135,48 @@ func makeRunFunc() downloader.RunFunc {
 			cmd.Env = append(os.Environ(), env...)
 		}
 		cmd.Stdout = stdout
-		cmd.Stderr = io.Discard
-		return cmd.Run()
+		tail := &tailWriter{max: 8192}
+		cmd.Stderr = tail
+		err := cmd.Run()
+		if err != nil {
+			if msg := tail.lastLines(8); msg != "" {
+				return fmt.Errorf("%w: %s", err, msg)
+			}
+		}
+		return err
 	}
+}
+
+// tailWriter keeps only the last max bytes written to it, so a verbose ffmpeg
+// stderr can be summarized on failure without buffering the whole stream. It is
+// safe for concurrent writes from the command's stderr pump.
+type tailWriter struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+// lastLines returns the last n non-empty lines of captured output joined with
+// " | " — enough to convey the real ffmpeg error without dumping the full log.
+func (w *tailWriter) lastLines(n int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	lines := strings.Split(strings.ReplaceAll(string(w.buf), "\r", "\n"), "\n")
+	var out []string
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			out = append([]string{s}, out...)
+		}
+	}
+	return strings.Join(out, " | ")
 }

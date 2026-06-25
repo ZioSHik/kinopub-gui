@@ -174,10 +174,10 @@ func (s *Server) kpStatus() KPStatus {
 	s.kpMu.Lock()
 	sess := s.kpLogin
 	var (
-		done                     bool
-		serr                     error
+		done                      bool
+		serr                      error
 		userCode, verificationURI string
-		expiresAt                time.Time
+		expiresAt                 time.Time
 	)
 	if sess != nil {
 		done = sess.done

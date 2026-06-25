@@ -7,7 +7,7 @@ BUILD   := go build -ldflags "$(LDFLAGS)" -trimpath
 # cmd/kinopub-gui/resource_windows_amd64.syso is present (see `make winsyso`).
 BUILD_WINGUI := go build -ldflags "$(LDFLAGS) -H windowsgui" -trimpath
 
-.PHONY: all build gui web web-install run dev test vet clean release-gui icons app dmg winsyso
+.PHONY: all build gui web web-install run dev test test-integration vet clean release-gui icons app dmg winsyso
 
 # Default: build the web UI and the GUI binary (which embeds it).
 all: web gui
@@ -39,6 +39,12 @@ run: web gui
 
 test:
 	go test ./... -count=1
+
+# Network integration tests (real uTLS handshakes against live hosts). Excluded
+# from `make test` so the default suite stays deterministic and passes offline.
+# Requires network; individual tests self-skip when no host is reachable.
+test-integration:
+	go test -tags netintegration ./... -count=1
 
 vet:
 	go vet ./...

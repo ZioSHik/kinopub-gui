@@ -8,6 +8,19 @@ type SeriesPlan struct {
 	Seasons            map[int]int // season number → total episode count in that season
 	AlreadyCompleted   int         // episodes already completed from previous sessions
 	CompletedPerSeason map[int]int // season → already completed count from previous sessions
+
+	// Planned lists the episodes this run will actually download (after skipping
+	// already-completed ones), in selection/queue order. The GUI seeds a pending
+	// row per entry so not-yet-started episodes are visible up front and can be
+	// reordered ("download next").
+	Planned []PlannedEpisode
+}
+
+// PlannedEpisode is a lightweight episode descriptor used to seed the UI's
+// pending list before any download starts.
+type PlannedEpisode struct {
+	Key   EpisodeKey
+	Title string
 }
 
 // ProgressSnapshot captures the current progress state at a point in time.

@@ -19,6 +19,21 @@ import (
 
 const stateFileName = ".kinopub-state.json"
 
+// pathMutexes serializes read-modify-write updates to each state file across
+// JSONStore instances. Concurrent jobs for the same series — e.g. a per-episode
+// retry running alongside its still-active parent job — each build their own
+// JSONStore over the same file; with only the per-instance mutex their
+// load→modify→write cycles could race and drop one job's completions. A shared
+// lock keyed by the absolute state-file path makes those cycles mutually
+// exclusive. Reads (Load) need no lock: writes land atomically via rename, so a
+// reader always sees a complete old-or-new file.
+var pathMutexes sync.Map // map[string]*sync.Mutex
+
+func pathMutex(p string) *sync.Mutex {
+	m, _ := pathMutexes.LoadOrStore(p, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
 // JSONStore persists download state as a JSON file in the series download
 // directory. It implements domain.StateStore.
 //
@@ -178,6 +193,13 @@ func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Serialize the load→modify→write across any other JSONStore writing the same
+	// file, then load the freshest state under that lock so a sibling job's
+	// completions are preserved (see pathMutexes).
+	pl := pathMutex(s.statePath())
+	pl.Lock()
+	defer pl.Unlock()
+
 	// Load current state (or start fresh).
 	state, _ := s.loadLocked(info.Key.Series)
 
@@ -221,6 +243,10 @@ func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) 
 func (s *JSONStore) SetMetadata(_ context.Context, series domain.SeriesID, meta domain.SeriesMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	pl := pathMutex(s.statePath())
+	pl.Lock()
+	defer pl.Unlock()
 
 	state, _ := s.loadLocked(series)
 	state.Metadata = &meta

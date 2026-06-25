@@ -47,6 +47,30 @@ func (r *eventReporter) Start(plan domain.SeriesPlan) {
 		AlreadyCompleted: plan.AlreadyCompleted,
 		Seasons:          seasons,
 	}
+	// Seed a pending row per planned episode so not-yet-started episodes are
+	// visible immediately and can be reordered ("download next") before they run.
+	// On a re-run (retry/resume) a row may already exist in a failed/paused state
+	// — reset every planned (i.e. not-yet-completed) episode to pending and clear
+	// stale progress so the card reflects the fresh attempt. Completed episodes
+	// are never in plan.Planned, so they keep their state.
+	for _, pe := range plan.Planned {
+		key := epKey(pe.Key)
+		if pe.Title != "" {
+			r.job.titles[key] = pe.Title
+		}
+		ev, ok := r.job.episodes[key]
+		if !ok {
+			ev = &EpisodeView{Key: key, Season: pe.Key.Season, Episode: pe.Key.Episode, Title: pe.Title}
+			r.job.episodes[key] = ev
+		}
+		ev.State = epPending
+		ev.Percent = 0
+		ev.Bytes = 0
+		ev.SpeedBps = 0
+		ev.ETASeconds = 0
+		ev.Error = ""
+		ev.Tracks = nil
+	}
 	r.job.mu.Unlock()
 	r.mgr.publishNow(r.job)
 }

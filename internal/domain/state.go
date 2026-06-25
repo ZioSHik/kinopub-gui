@@ -12,11 +12,13 @@ type DownloadState struct {
 
 // SeriesMetadata stores provenance and descriptive information about the series.
 type SeriesMetadata struct {
-	Title         string `json:"title,omitempty"`
-	OriginalTitle string `json:"original_title,omitempty"`
-	Description   string `json:"description,omitempty"`
-	PosterURL     string `json:"poster_url,omitempty"`
-	InputURL      string `json:"input_url,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	OriginalTitle string   `json:"original_title,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	PosterURL     string   `json:"poster_url,omitempty"`
+	InputURL      string   `json:"input_url,omitempty"`
+	Type          string   `json:"type,omitempty"`   // kino.pub item type: movie, serial, documovie, …
+	Genres        []string `json:"genres,omitempty"` // genre titles, for library filtering
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 

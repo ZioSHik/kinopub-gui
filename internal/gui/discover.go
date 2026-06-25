@@ -62,6 +62,13 @@ type DiscoverAudio struct {
 	// Filter is the substring the download audio-preference should match
 	// against the HLS track name (author when present, else type/lang).
 	Filter string `json:"filter"`
+	// Codec is the audio codec ("ac3", "aac", …) and Channels the channel count.
+	// Surround variants (e.g. AC3 5.1) are listed as SEPARATE picker entries from
+	// the plain stereo dub so the user can pick exactly one; the frontend uses
+	// Surround to build a precise selection that distinguishes them.
+	Codec    string `json:"codec,omitempty"`
+	Channels int    `json:"channels,omitempty"`
+	Surround bool   `json:"surround"`
 }
 
 // DiscoverEpisode is a single selectable episode.
@@ -188,7 +195,47 @@ func audioLabel(a kinopubapi.Audio) (label, filter string) {
 			label = fmt.Sprintf("Дорожка %d", a.Index)
 		}
 	}
+	// Tag surround/codec variants so the plain stereo dub and its AC3/5.1 sibling
+	// are distinct picker entries (and distinct dedupe keys) rather than collapsed.
+	if sfx := audioCodecSuffix(a); sfx != "" {
+		label += " · " + sfx
+	}
 	return label, filter
+}
+
+// surroundCodecs are codecs that indicate a separate surround variant of a dub.
+var surroundCodecs = map[string]bool{
+	"ac3": true, "eac3": true, "e-ac3": true, "dts": true, "dts-hd": true,
+	"truehd": true, "true-hd": true,
+}
+
+// audioIsSurround reports whether an audio track is a surround/codec variant
+// (e.g. AC3 5.1) as opposed to the plain stereo dub.
+func audioIsSurround(a kinopubapi.Audio) bool {
+	if surroundCodecs[strings.ToLower(strings.TrimSpace(a.Codec))] {
+		return true
+	}
+	return a.Channels >= 6
+}
+
+// audioCodecSuffix returns a short human suffix for a surround variant, e.g.
+// "AC3 5.1", or "" for a plain stereo track.
+func audioCodecSuffix(a kinopubapi.Audio) string {
+	if !audioIsSurround(a) {
+		return ""
+	}
+	codec := strings.ToUpper(strings.TrimSpace(a.Codec))
+	if codec == "" {
+		codec = "Surround"
+	}
+	switch {
+	case a.Channels >= 8:
+		return codec + " 7.1"
+	case a.Channels >= 6:
+		return codec + " 5.1"
+	default:
+		return codec
+	}
 }
 
 // collectAudios returns the distinct озвучки for an item (sampled from the first
@@ -230,12 +277,15 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 			idx = i
 		}
 		out = append(out, DiscoverAudio{
-			Index:  idx,
-			Lang:   a.Lang,
-			Type:   a.Type.Title,
-			Author: a.Author.Title,
-			Label:  label,
-			Filter: filter,
+			Index:    idx,
+			Lang:     a.Lang,
+			Type:     a.Type.Title,
+			Author:   a.Author.Title,
+			Label:    label,
+			Filter:   filter,
+			Codec:    a.Codec,
+			Channels: a.Channels,
+			Surround: audioIsSurround(a),
 		})
 	}
 	return out
@@ -628,11 +678,89 @@ func (s *Server) handleDiscoverStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "no playable stream for this item")
 		return
 	}
+	resumeTime, duration := watchProgress(item, season, episode)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"manifestUrl": manifest,
 		"playUrl":     s.proxiedHLSURL(manifest),
 		"title":       title,
+		"resumeTime":  resumeTime, // seconds; 0 when there's nothing to resume
+		"duration":    duration,   // seconds; 0 when unknown
 	})
+}
+
+// watchProgress returns the saved resume position and duration (both seconds)
+// for the targeted video/episode. It returns 0 for the resume position when
+// there's nothing worth resuming: unseen, fully watched, only a few seconds in,
+// or already within the last minute.
+func watchProgress(item kinopubapi.Item, season, episode int) (int, int) {
+	var w kinopubapi.Watching
+	var dur float64
+	switch {
+	case len(item.Seasons) > 0:
+		for _, sea := range item.Seasons {
+			if sea.Number != season {
+				continue
+			}
+			for _, ep := range sea.Episodes {
+				if ep.Number == episode {
+					w, dur = ep.Watching, ep.Duration
+				}
+			}
+		}
+	case len(item.Videos) > 0:
+		// Movie (season/episode usually omitted): the first video, or a specific
+		// numbered part when one was requested.
+		v := item.Videos[0]
+		if episode > 0 {
+			for _, vv := range item.Videos {
+				if vv.Number == episode {
+					v = vv
+				}
+			}
+		}
+		w, dur = v.Watching, v.Duration
+	}
+	t, d := int(w.Time), int(dur)
+	switch {
+	case w.Status == 1: // fully watched
+		return 0, d
+	case t <= 10: // nothing meaningful to resume
+		return 0, d
+	case d > 0 && t > d-60: // basically finished
+		return 0, d
+	default:
+		return t, d
+	}
+}
+
+// handleDiscoverMarkTime records playback progress (so the title lands in
+// History / continue-watching and can be resumed). The frontend player calls it
+// periodically and on close.
+func (s *Server) handleDiscoverMarkTime(w http.ResponseWriter, r *http.Request) {
+	client, ok := s.kpClientOrErr(w)
+	if !ok {
+		return
+	}
+	var body struct {
+		ID      string `json:"id"`
+		Season  int    `json:"season"`
+		Episode int    `json:"episode"`
+		Time    int    `json:"time"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		writeErr(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	// video number = episode for serials, 1 for movies (MarkTime clamps ≤0 to 1).
+	if err := client.MarkTime(r.Context(), body.ID, body.Episode, body.Season, body.Time); err != nil {
+		s.kpFail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleDiscoverSimilar(w http.ResponseWriter, r *http.Request) {

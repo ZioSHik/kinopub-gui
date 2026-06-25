@@ -30,6 +30,7 @@ interface AppContextValue {
   jobs: JobView[];
   kpauth: KPStatus;
   kpUser: KPUser | null;
+  kpUserError: boolean;
   ffmpeg: FFmpegStatus;
   settings: Settings;
   settingsLoaded: boolean;
@@ -60,6 +61,7 @@ const emptySettings: Settings = {
   noChunked: false,
   theme: "cinematic",
   libraryDirs: null,
+  maxActiveJobs: 0,
 };
 
 function sortJobs(jobs: JobView[]): JobView[] {
@@ -74,6 +76,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<JobView[]>([]);
   const [kpauth, setKpAuth] = useState<KPStatus>(emptyKpAuth);
   const [kpUser, setKpUser] = useState<KPUser | null>(null);
+  const [kpUserError, setKpUserError] = useState(false);
   const [ffmpeg, setFFmpeg] = useState<FFmpegStatus>(emptyFFmpeg);
   const [settings, setSettings] = useState<Settings>(emptySettings);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -186,18 +189,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Load the account profile (username + subscription) whenever sign-in state
   // flips to logged-in; clear it on logout. Fed by the SSE kpauth updates.
+  //
+  // If the kino.pub host is unreachable (e.g. VPN off) the fetch fails: surface
+  // that as an explicit error state rather than leaving kpUser null, which the
+  // UI would otherwise mistake for "no subscription". Keep retrying so the card
+  // self-heals once connectivity returns.
   useEffect(() => {
     if (!kpauth.loggedIn) {
       setKpUser(null);
+      setKpUserError(false);
       return;
     }
     let alive = true;
-    api
-      .kpUser()
-      .then((u) => alive && setKpUser(u))
-      .catch(() => {});
+    let timer: number | undefined;
+    const load = () => {
+      api
+        .kpUser()
+        .then((u) => {
+          if (!alive) return;
+          setKpUser(u);
+          setKpUserError(false);
+        })
+        .catch(() => {
+          if (!alive) return;
+          setKpUserError(true);
+          timer = window.setTimeout(load, 15000);
+        });
+    };
+    load();
     return () => {
       alive = false;
+      if (timer) window.clearTimeout(timer);
     };
   }, [kpauth.loggedIn]);
 
@@ -208,6 +230,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       jobs,
       kpauth,
       kpUser,
+      kpUserError,
       ffmpeg,
       settings,
       settingsLoaded,
@@ -221,7 +244,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       dismissToast,
     }),
-    [connected, version, jobs, kpauth, kpUser, ffmpeg, settings, settingsLoaded, update, ffmpegInstall, toasts],
+    [connected, version, jobs, kpauth, kpUser, kpUserError, ffmpeg, settings, settingsLoaded, update, ffmpegInstall, toasts],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

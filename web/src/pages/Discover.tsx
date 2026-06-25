@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, KeyRound, Loader2, Search } from "lucide-react";
+import { Bookmark, KeyRound, LayoutGrid, Loader2, RefreshCw, Search, WifiOff, type LucideIcon } from "lucide-react";
 import {
   api,
   imgURL,
@@ -9,6 +9,7 @@ import {
   type ItemsQuery,
   type NamedRef,
 } from "../api";
+import { CATEGORIES, categoryByKey } from "../categories";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
 import {
@@ -33,7 +34,7 @@ import {
 } from "../components/FilterPanel";
 
 type Tab = "new" | "collections" | "watching" | "bookmarks" | "history";
-type ColTab = "new" | "popular" | "watched" | "categories" | "subs";
+type ColTab = "new" | "popular" | "watched" | "subs";
 type WatchTab = "serials" | "movies";
 
 const COL_SORT: Record<"new" | "popular" | "watched", string> = {
@@ -43,9 +44,12 @@ const COL_SORT: Record<"new" | "popular" | "watched", string> = {
 };
 
 function filterToQuery(f: FilterState): ItemsQuery {
+  // The category fixes the content type (and, for Anime/Sport, a spanning genre);
+  // within a type category the user's chosen sub-genre wins.
+  const cat = categoryByKey(f.category);
   return {
-    type: f.type || undefined,
-    genre: f.genre || undefined,
+    type: cat?.type || undefined,
+    genre: cat?.genre || f.genre || undefined,
     country: f.country || undefined,
     sort: f.sort || undefined,
     yearFrom: f.yearFrom > YEAR_MIN ? f.yearFrom : undefined,
@@ -109,18 +113,31 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Set when a request fails. A failed *first* load renders a full error panel
+  // (most often kino.pub being unreachable without a VPN); a failed page-append
+  // just toasts, since there's already content on screen.
+  const [error, setError] = useState(false);
 
   const searching = committedSearch.length >= 2;
   const collectionsListMode =
     !searching && tab === "collections" && !collectionId && (colTab === "new" || colTab === "popular" || colTab === "watched");
-  const categoriesMode = !searching && tab === "collections" && colTab === "categories" && !collectionId;
   const bookmarksListMode = !searching && tab === "bookmarks" && !bookmarkId;
 
-  // Load genres once for "Categories".
+  // The active category and the genre group to offer as sub-genres beneath it.
+  // Genre-based categories (Anime/Sport) are themselves a genre, so they carry no
+  // genreType and show no sub-genre row.
+  const activeCat = categoryByKey(filter.category);
+  const genreType = activeCat?.genreType ?? "";
+
+  // Load the selected category's genres (kept clean by querying per type; the
+  // unfiltered endpoint mixes in music/docu junk).
   useEffect(() => {
-    if (!loggedIn) return;
-    api.discoverGenres().then((r) => setGenres(r.items || [])).catch(() => {});
-  }, [loggedIn]);
+    if (!loggedIn || !genreType) {
+      setGenres([]);
+      return;
+    }
+    api.discoverGenres(genreType).then((r) => setGenres(r.items || [])).catch(() => setGenres([]));
+  }, [loggedIn, genreType]);
 
   const fetchItems = useCallback(
     (p: number) => {
@@ -137,9 +154,10 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
 
   const loadPage = useCallback(
     async (reset: boolean) => {
-      if (!loggedIn || categoriesMode) return;
+      if (!loggedIn) return;
       const next = reset ? 1 : page + 1;
       setLoading(true);
+      if (reset) setError(false);
       try {
         if (collectionsListMode) {
           const r = await api.discoverCollections(COL_SORT[colTab as "new" | "popular" | "watched"], next);
@@ -159,12 +177,15 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
           setPage(r.page || next);
         }
       } catch (e: any) {
-        toast(e.message || t("Catalog request failed"), "error");
+        setError(true);
+        // First load failed → the error panel below carries the message; a
+        // failed append keeps the existing results and just toasts.
+        if (!reset) toast(e.message || t("Catalog request failed"), "error");
       } finally {
         setLoading(false);
       }
     },
-    [loggedIn, categoriesMode, collectionsListMode, bookmarksListMode, colTab, page, fetchItems, toast, t],
+    [loggedIn, collectionsListMode, bookmarksListMode, colTab, page, fetchItems, toast, t],
   );
 
   // Reset + load whenever the data source changes.
@@ -179,6 +200,7 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
     setBookmarks([]);
     setPage(1);
     setHasMore(false);
+    setError(false);
     loadPage(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey]);
@@ -189,18 +211,30 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
   loadMoreRef.current = () => {
     if (hasMore && !loading) loadPage(false);
   };
+  // Re-arm the observer after every append (and once loading settles). An
+  // IntersectionObserver only fires on an off→on-screen transition; a short page
+  // (e.g. Collections, with wide cards) can leave the sentinel permanently in
+  // view, so it never re-fires and paging stalls. Re-observing re-checks the
+  // current intersection and keeps paging until the sentinel scrolls off.
   useEffect(() => {
     const el = sentinelRef.current;
-    if (!el) return;
-    const ob = new IntersectionObserver((es) => es[0]?.isIntersecting && loadMoreRef.current());
+    if (!el || !hasMore) return;
+    const ob = new IntersectionObserver((es) => es[0]?.isIntersecting && loadMoreRef.current(), {
+      rootMargin: "400px",
+    });
     ob.observe(el);
     return () => ob.disconnect();
-  }, []);
+  }, [hasMore, loading, items.length, collections.length, bookmarks.length]);
 
-  const openCatalogGenre = (id: string) => {
-    setFilter({ ...defaultFilter(), genre: id });
+  // Picking a category (the catalog's spine) drops to the bare Browse catalog and
+  // clears any sub-genre, since genres are scoped to the new category.
+  const selectCategory = (key: string) => {
+    setFilter((f) => ({ ...f, category: key, genre: "" }));
     setTab("new");
+    leaveFolder();
+    setSearch("");
   };
+  const selectGenre = (id: string) => setFilter((f) => ({ ...f, genre: id }));
 
   // Opening a card or collection pushes a hash route, so the URL reflects the
   // exact view, a reload restores it, and browser-back closes it. The router
@@ -284,13 +318,42 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
             <SubChip active={tab === "history"} onClick={() => selectTab("history")}>{t("History")}</SubChip>
           </div>
 
-          {/* Browse: quick sort presets (same style as collections) */}
+          {/* Browse: the category bar (mirrors kino.pub's category sidebar), then
+              the selected category's genres, then quick sort presets. "Fresh" is
+              the default sort (see defaultFilter), so one sort chip is always lit. */}
           {tab === "new" && (
-            <div className="flex flex-wrap gap-2">
-              <SubChip active={filter.sort === "views-"} onClick={() => setFilter((f) => ({ ...f, sort: "views-" }))}>{t("Popular")}</SubChip>
-              <SubChip active={filter.sort === "created-"} onClick={() => setFilter((f) => ({ ...f, sort: "created-" }))}>{t("Fresh")}</SubChip>
-              <SubChip active={filter.sort === "watchers-"} onClick={() => setFilter((f) => ({ ...f, sort: "watchers-" }))}>{t("Hot")}</SubChip>
-            </div>
+            <>
+              <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+                <CategoryChip active={!filter.category} icon={LayoutGrid} label={t("All")} onClick={() => selectCategory("")} />
+                {CATEGORIES.map((c) => (
+                  <CategoryChip
+                    key={c.key}
+                    active={filter.category === c.key}
+                    icon={c.icon}
+                    label={t(c.label)}
+                    onClick={() => selectCategory(c.key)}
+                  />
+                ))}
+              </div>
+
+              {genreType && genres.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="mr-1 text-xs font-medium text-slate-500">{t("Genres")}:</span>
+                  <GenreChip active={!filter.genre} onClick={() => selectGenre("")}>{t("All genres")}</GenreChip>
+                  {genres.map((g) => (
+                    <GenreChip key={g.id} active={filter.genre === g.id} onClick={() => selectGenre(g.id)}>
+                      {g.title}
+                    </GenreChip>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <SubChip active={filter.sort === "created-"} onClick={() => setFilter((f) => ({ ...f, sort: "created-" }))}>{t("Fresh")}</SubChip>
+                <SubChip active={filter.sort === "views-"} onClick={() => setFilter((f) => ({ ...f, sort: "views-" }))}>{t("Popular")}</SubChip>
+                <SubChip active={filter.sort === "watchers-"} onClick={() => setFilter((f) => ({ ...f, sort: "watchers-" }))}>{t("Hot")}</SubChip>
+              </div>
+            </>
           )}
 
           {/* Collections sub-tabs */}
@@ -299,7 +362,6 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
               <SubChip active={colTab === "new"} onClick={() => setColTab("new")}>{t("New")}</SubChip>
               <SubChip active={colTab === "popular"} onClick={() => setColTab("popular")}>{t("Popular")}</SubChip>
               <SubChip active={colTab === "watched"} onClick={() => setColTab("watched")}>{t("Most watched")}</SubChip>
-              <SubChip active={colTab === "categories"} onClick={() => setColTab("categories")}>{t("Categories")}</SubChip>
               <SubChip active={colTab === "subs"} onClick={() => setColTab("subs")}>{t("Subscriptions")}</SubChip>
             </div>
           )}
@@ -335,16 +397,10 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
       )}
 
       {/* Content */}
-      {loading && items.length === 0 && collections.length === 0 && bookmarks.length === 0 && !categoriesMode ? (
+      {error && items.length === 0 && collections.length === 0 && bookmarks.length === 0 ? (
+        <CatalogError onRetry={() => loadPage(true)} onOpenSettings={onOpenSettings} />
+      ) : loading && items.length === 0 && collections.length === 0 && bookmarks.length === 0 ? (
         <SkeletonGrid wide={collectionsListMode || bookmarksListMode} />
-      ) : categoriesMode ? (
-        <div className="flex flex-wrap gap-2">
-          {genres.map((g) => (
-            <button key={g.id} onClick={() => openCatalogGenre(g.id)} className="chip text-slate-300 hover:bg-white/[0.06]">
-              {g.title}
-            </button>
-          ))}
-        </div>
       ) : collectionsListMode ? (
         <CollectionsGrid collections={collections} onOpen={openCollection} />
       ) : bookmarksListMode ? (
@@ -357,7 +413,7 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
 
       {/* Empty / loader / infinite-scroll sentinel */}
       {!loading &&
-        !categoriesMode &&
+        !error &&
         (bookmarksListMode
           ? bookmarks.length === 0
           : collectionsListMode
@@ -400,6 +456,30 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
   );
 }
 
+// CatalogError replaces the grid when a request fails — most commonly because
+// kino.pub is unreachable without a VPN. Offers a one-tap retry and a shortcut
+// to Settings (where the proxy lives).
+function CatalogError({ onRetry, onOpenSettings }: { onRetry: () => void; onOpenSettings: () => void }) {
+  const { t } = useI18n();
+  return (
+    <EmptyState
+      icon={<WifiOff className="h-6 w-6" />}
+      title={t("Couldn't reach kino.pub")}
+      hint={t("If kino.pub is blocked in your region, enable a VPN (or set a proxy in Settings), then try again.")}
+      action={
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button className="btn-primary" onClick={onRetry}>
+            <RefreshCw className="h-4 w-4" /> {t("Retry")}
+          </button>
+          <button className="btn-ghost" onClick={onOpenSettings}>
+            {t("Go to Settings")}
+          </button>
+        </div>
+      }
+    />
+  );
+}
+
 function Header() {
   const { t } = useI18n();
   return (
@@ -417,6 +497,43 @@ function SubChip({ active, onClick, children }: { active: boolean; onClick: () =
     <button
       onClick={onClick}
       className={`rounded-lg px-3 py-1.5 text-sm transition ${active ? "bg-gold-500/[0.14] text-gold-200" : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// CategoryChip is a content-category pill with its icon, used in the catalog's
+// top category bar (mirrors kino.pub's category sidebar). shrink-0 keeps chips
+// from squashing inside the horizontally scrollable bar.
+function CategoryChip({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition ${active ? "bg-gold-500/[0.14] text-gold-200" : "text-slate-400 hover:bg-white/[0.05] hover:text-slate-200"}`}
+    >
+      <Icon className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
+
+// GenreChip is a smaller pill for the selected category's sub-genres.
+function GenreChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full px-2.5 py-1 text-xs transition ${active ? "bg-gold-500/[0.14] text-gold-200" : "bg-white/[0.04] text-slate-400 hover:bg-white/[0.08] hover:text-slate-200"}`}
     >
       {children}
     </button>
@@ -451,10 +568,15 @@ function ItemsGrid({ items, onOpen }: { items: DiscoverItem[]; onOpen: (it: Disc
                 </span>
               )}
             </div>
+            {/* Every meta line is always present (nbsp filler) and the ratings row
+                has a reserved fixed height, so cards are uniformly tall and the
+                grid rows don't jump between titles that have more/less metadata. */}
             <p className="mt-1.5 truncate text-xs font-semibold text-slate-100">{it.title}</p>
-            {it.originalTitle && <p className="truncate text-[11px] text-slate-500">{it.originalTitle}</p>}
-            <p className="text-[11px] text-slate-500">{it.year || ""}</p>
-            <Ratings item={it} className="mt-1" />
+            <p className="truncate text-[11px] text-slate-500">{it.originalTitle || " "}</p>
+            <p className="text-[11px] text-slate-500">{it.year || " "}</p>
+            <div className="mt-1 flex h-5 items-center overflow-hidden">
+              <Ratings item={it} />
+            </div>
           </button>
         );
       })}
@@ -470,8 +592,16 @@ function SkeletonGrid({ wide }: { wide?: boolean }) {
       {Array.from({ length: wide ? 8 : 18 }).map((_, i) => (
         <div key={i} className="animate-pulse">
           <div className={`${wide ? "aspect-video" : "aspect-[2/3]"} w-full rounded-xl bg-white/[0.05]`} />
-          <div className="mt-1.5 h-3 w-3/4 rounded bg-white/[0.05]" />
-          {!wide && <div className="mt-1 h-2.5 w-1/3 rounded bg-white/[0.04]" />}
+          <div className="mt-1.5 h-3.5 w-3/4 rounded bg-white/[0.05]" />
+          {!wide && (
+            <>
+              {/* Mirror the real card's meta lines (original title, year, ratings)
+                  so the grid height doesn't jump when posters finish loading. */}
+              <div className="mt-1.5 h-2.5 w-1/2 rounded bg-white/[0.04]" />
+              <div className="mt-1.5 h-2.5 w-1/4 rounded bg-white/[0.04]" />
+              <div className="mt-1.5 h-4 w-2/3 rounded bg-white/[0.04]" />
+            </>
+          )}
         </div>
       ))}
     </div>

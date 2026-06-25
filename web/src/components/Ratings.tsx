@@ -14,7 +14,7 @@ function rateColor(v: number): string {
 export function Ratings({ item, className }: { item: Pick<DiscoverItem, "rating" | "kinopoiskRating" | "imdbRating">; className?: string }) {
   if (item.rating <= 0 && item.kinopoiskRating <= 0 && item.imdbRating <= 0) return null;
   return (
-    <div className={`flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-bold ${className || ""}`}>
+    <div className={`flex flex-nowrap items-center gap-x-2.5 text-xs font-bold ${className || ""}`}>
       {item.rating > 0 && (
         <span className="inline-flex items-center gap-1">
           <ThumbsUp className="h-3.5 w-3.5 text-slate-400" />

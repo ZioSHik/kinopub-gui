@@ -39,6 +39,11 @@ type MasterPlaylist struct {
 type MediaPlaylist struct {
 	Segments      []Segment
 	TotalDuration float64 // sum of all segment durations
+	// InitURI is the EXT-X-MAP initialization segment URL for fMP4/CMAF streams
+	// (kino.pub serves these for 4K/HEVC). Empty for plain MPEG-TS playlists. It
+	// holds the ftyp+moov header and MUST be prepended to the concatenated media
+	// segments, or the result is headless and ffmpeg cannot demux it.
+	InitURI string
 }
 
 // FetchMasterPlaylist downloads and parses an HLS master playlist.
@@ -175,6 +180,16 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+
+		if strings.HasPrefix(line, "#EXT-X-MAP:") {
+			// fMP4/CMAF initialization segment (ftyp+moov). Capture its URI so the
+			// downloader can fetch it and prepend it to the media fragments.
+			attrs := parseHLSAttributes(line[len("#EXT-X-MAP:"):])
+			if uri := attrs["URI"]; uri != "" {
+				result.InitURI = resolveURL(baseURL, uri)
+			}
+			continue
+		}
 
 		if strings.HasPrefix(line, "#EXTINF:") {
 			// Parse duration: #EXTINF:10.0, or #EXTINF:10.0,title
