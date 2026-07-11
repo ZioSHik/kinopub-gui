@@ -84,7 +84,7 @@ chmod +x kinopub-gui-darwin-arm64
 
 On **macOS** you can instead grab the `.dmg` and drag **KinoPub** to Applications — it runs as a menu-bar app (no Dock icon; the status-bar item has *Open* and *Quit*).
 
-On **Windows**, unzip `kinopub-gui-windows-amd64.zip` and run the executable (double-click or from a terminal):
+On **Windows**, download `kinopub-gui-windows-amd64.exe` and run it (double-click or from a terminal):
 
 ```powershell
 .\kinopub-gui-windows-amd64.exe

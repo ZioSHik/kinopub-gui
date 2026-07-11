@@ -39,10 +39,7 @@ jobs:
           ARCH=x86_64 ./scripts/package-macos.sh
           cp dist-app/KinoPub.app/Contents/MacOS/kinopub-gui out/kinopub-gui-darwin-amd64
           cp dist-app/*.dmg out/
-          cd out
-          tar -czf kinopub-gui-darwin-arm64.tar.gz kinopub-gui-darwin-arm64
-          tar -czf kinopub-gui-darwin-amd64.tar.gz kinopub-gui-darwin-amd64
-          ls -la
+          ls -la out
 
       - uses: actions/upload-artifact@v4
         with:
@@ -94,13 +91,7 @@ jobs:
           # ---- GUI: Linux amd64 (tray via GTK/appindicator — needs CGO) ----
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -trimpath -o out/kinopub-gui-linux-amd64 ./cmd/kinopub-gui
 
-          # ---- archives ----
-          cd out
-          for b in kinopub-gui-linux-amd64 kinopub-gui-linux-arm64 kinopub-gui-android-arm64; do
-            tar -czf "$b.tar.gz" "$b"
-          done
-          zip kinopub-gui-windows-amd64.zip kinopub-gui-windows-amd64.exe
-          ls -la
+          ls -la out
 
       - name: Build Linux AppImage (amd64, tray)
         continue-on-error: true

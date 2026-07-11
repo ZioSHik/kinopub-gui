@@ -84,7 +84,7 @@ chmod +x kinopub-gui-darwin-arm64
 
 На **macOS** можно вместо этого взять `.dmg` и перетащить **KinoPub** в Applications — приложение живёт в строке меню (без иконки в Dock; в пункте строки состояния есть *Open* и *Quit*).
 
-На **Windows** распакуйте `kinopub-gui-windows-amd64.zip` и запустите исполняемый файл (двойным щелчком или из терминала):
+На **Windows** скачайте `kinopub-gui-windows-amd64.exe` и запустите его (двойным щелчком или из терминала):
 
 ```powershell
 .\kinopub-gui-windows-amd64.exe
