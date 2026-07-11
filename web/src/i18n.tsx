@@ -317,6 +317,8 @@ const RU: Record<string, string> = {
   "Search kino.pub, browse tops and collections, preview voiceovers — and download in one click.":
     "Ищите на kino.pub, смотрите топы и подборки, оценивайте озвучки — и качайте в один клик.",
   "Search films and series on kino.pub…": "Поиск фильмов и сериалов на kino.pub…",
+  "Showing title matches. Clear the search to browse by category, genre and filters.":
+    "Показаны совпадения по названию. Очистите поиск, чтобы фильтровать по категории, жанру и параметрам.",
   Popular: "Популярное",
   Hot: "Горячее",
   Fresh: "Новое",

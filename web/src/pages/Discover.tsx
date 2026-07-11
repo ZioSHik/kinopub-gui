@@ -304,11 +304,19 @@ export function DiscoverPage({ onStarted, onOpenSettings }: { onStarted: () => v
         )}
       </div>
 
-      {/* Filter lives right under the search and drives the catalog results. */}
-      <FilterPanel value={filter} onChange={onFilterChange} onReset={() => onFilterChange(defaultFilter())} />
-
-      {!searching && (
+      {searching ? (
+        // kino.pub's title search is a dedicated endpoint that can't be narrowed
+        // by category/genre/filters, so hide those controls while a query is
+        // active (they'd only fight the search) and tell the user how to browse
+        // by genre instead — clear the search.
+        <p className="px-1 text-xs text-slate-500">
+          {t("Showing title matches. Clear the search to browse by category, genre and filters.")}
+        </p>
+      ) : (
         <>
+          {/* Filter lives right under the search and drives the catalog results. */}
+          <FilterPanel value={filter} onChange={onFilterChange} onReset={() => onFilterChange(defaultFilter())} />
+
           {/* Primary tabs */}
           <div className="flex flex-wrap items-center gap-2">
             <SubChip active={tab === "new"} onClick={() => selectTab("new")}>{t("Browse")}</SubChip>
