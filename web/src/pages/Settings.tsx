@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ArrowUpCircle, FolderOpen, FolderPlus, RefreshCw, Save, Server, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ArrowUpCircle, Check, FolderOpen, FolderPlus, RefreshCw, Server, Trash2, TriangleAlert } from "lucide-react";
 import { api, type FFmpegStatus, type Settings } from "../api";
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
@@ -8,47 +8,87 @@ import { DirPicker } from "../components/DirPicker";
 import { InstallFFmpeg } from "../components/InstallFFmpeg";
 import { KinopubLogin } from "../components/KinopubLogin";
 
+type SaveState = "idle" | "saving" | "saved" | "error";
+
 export function SettingsPage() {
   const { settings, ffmpeg, setSettingsLocal, toast } = useApp();
   const { t } = useI18n();
   const [form, setForm] = useState<Settings>(settings);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
   const [pickOutput, setPickOutput] = useState(false);
   const [pickLib, setPickLib] = useState(false);
 
-  // Only resync from store when the user has no unsaved edits (B4).
-  // This prevents an SSE reconnect/blip from clobbering in-progress edits.
+  // Settings persist automatically on every edit (debounced) — no Save button.
+  // dirty gates the resync effect so an SSE echo can't clobber in-progress edits;
+  // editSeq lets an in-flight save notice a newer edit landed while it was on the
+  // wire and skip settling stale state; formRef feeds the latest value to both the
+  // edit handler and the unmount flush.
+  const dirty = useRef(false);
+  const editSeq = useRef(0);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const formRef = useRef(form);
+  formRef.current = form;
+
+  // Resync from the store only when there's no pending edit (B4), so an SSE
+  // reconnect/blip — or the echo of our own save — can't overwrite what the user
+  // is editing.
   useEffect(() => {
-    if (!dirty) setForm(settings);
+    if (!dirty.current) setForm(settings);
   }, [settings]);
 
-  const set = <K extends keyof Settings>(k: K, v: Settings[K]) => {
-    setDirty(true);
-    setForm((f) => ({ ...f, [k]: v }));
-  };
+  // Let the transient "Saved" tick fade back to idle so it doesn't linger.
+  useEffect(() => {
+    if (saveState !== "saved") return;
+    const id = window.setTimeout(() => setSaveState("idle"), 1800);
+    return () => window.clearTimeout(id);
+  }, [saveState]);
 
-  const save = async () => {
-    setSaving(true);
+  const persist = async (payload: Settings, seq: number) => {
+    setSaveState("saving");
     try {
-      const saved = await api.saveSettings(form);
-      setSettingsLocal(saved);
-      setDirty(false);
-      toast(t("Settings saved"), "success");
+      const saved = await api.saveSettings(payload);
+      // Only settle when this is still the latest edit; otherwise a newer save is
+      // already queued and will publish the newer value.
+      if (editSeq.current === seq) {
+        dirty.current = false;
+        setSettingsLocal(saved);
+        setSaveState("saved");
+      }
     } catch (e: any) {
+      setSaveState("error");
       toast(e.message || t("Save failed"), "error");
-    } finally {
-      setSaving(false);
     }
   };
+
+  const set = <K extends keyof Settings>(k: K, v: Settings[K]) => {
+    const next = { ...formRef.current, [k]: v };
+    setForm(next);
+    dirty.current = true;
+    setSaveState("saving");
+    const seq = ++editSeq.current;
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => void persist(next, seq), 600);
+  };
+
+  // Flush a still-pending edit if the user leaves the page before the debounce
+  // fires, so nothing is silently dropped.
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      if (dirty.current) void api.saveSettings(formRef.current);
+    };
+  }, []);
 
   const libDirs = form.libraryDirs || [];
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
-      <header>
-        <h1 className="text-2xl font-bold text-slate-100">{t("Settings")}</h1>
-        <p className="mt-1 text-sm text-slate-400">{t("Defaults applied to every new download.")}</p>
+      <header className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-100">{t("Settings")}</h1>
+          <p className="mt-1 text-sm text-slate-400">{t("Changes are saved automatically.")}</p>
+        </div>
+        <SaveStatus state={saveState} />
       </header>
 
       <KinopubLogin />
@@ -142,13 +182,6 @@ export function SettingsPage() {
 
       <UpdateCard />
 
-      <div className="flex justify-end">
-        <button className="btn-primary" onClick={save} disabled={saving}>
-          {saving ? <Spinner className="h-4 w-4" /> : <Save className="h-4 w-4" />}
-          {t("Save settings")}
-        </button>
-      </div>
-
       <DirPicker open={pickOutput} initial={form.outputPath} onClose={() => setPickOutput(false)} onSelect={(p) => set("outputPath", p)} />
       <DirPicker
         open={pickLib}
@@ -158,6 +191,35 @@ export function SettingsPage() {
       />
     </div>
   );
+}
+
+// SaveStatus is the small live indicator that replaces the old Save button:
+// it shows the auto-save is in flight, just landed, or failed. Idle shows
+// nothing so the header stays quiet once everything is persisted.
+function SaveStatus({ state }: { state: SaveState }) {
+  const { t } = useI18n();
+  if (state === "saving") {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-slate-400">
+        <Spinner className="h-3.5 w-3.5" /> {t("Saving…")}
+      </span>
+    );
+  }
+  if (state === "saved") {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-emerald-400">
+        <Check className="h-3.5 w-3.5" /> {t("Saved")}
+      </span>
+    );
+  }
+  if (state === "error") {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-ember-400">
+        <TriangleAlert className="h-3.5 w-3.5" /> {t("Save failed")}
+      </span>
+    );
+  }
+  return null;
 }
 
 function UpdateCard() {

@@ -19,6 +19,10 @@ const RU: Record<string, string> = {
   "Reconnecting to app…": "Переподключение к приложению…",
   "Signed in": "Вы вошли",
   "Sign in": "Войти",
+  "in Settings": "в Настройках",
+  "Sign in in Settings": "Войти — в Настройках",
+  "Install in Settings": "Установить в Настройках",
+  "ffmpeg missing — install it in Settings": "ffmpeg не найден — установите в Настройках",
   "Expand sidebar": "Развернуть панель",
   "Collapse sidebar": "Свернуть панель",
   "{n} days left": "осталось {n} дн.",
@@ -210,6 +214,9 @@ const RU: Record<string, string> = {
   "Save settings": "Сохранить настройки",
   "Settings saved": "Настройки сохранены",
   "Save failed": "Не удалось сохранить",
+  "Changes are saved automatically.": "Изменения сохраняются автоматически.",
+  "Saving…": "Сохранение…",
+  Saved: "Сохранено",
 
   // Audio menu
   "Choose audio tracks": "Выбор аудиодорожек",

@@ -86,6 +86,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   });
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastSeq = useRef(0);
+  // The version this tab first loaded with. After a self-update the server
+  // re-execs and the SSE reconnects with a snapshot carrying the NEW version,
+  // while the tab still runs the old JS/CSS bundle — a mismatch. When we see the
+  // version change, reload once so the fresh bundle is served (see applySnapshot).
+  const loadedVersion = useRef<string>("");
 
   const refreshUpdate = (force = false): Promise<void> =>
     api
@@ -103,6 +108,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const dismissToast = (id: number) => setToasts((t) => t.filter((x) => x.id !== id));
 
   const applySnapshot = (snap: Snapshot) => {
+    // Reload the tab when the backend version changes under us (self-update
+    // restart): the first snapshot records the baseline, any later change forces
+    // a fresh load so we never run the old bundle against the new server. The
+    // hash route is preserved, so the user stays on the same page.
+    if (snap.version) {
+      if (!loadedVersion.current) {
+        loadedVersion.current = snap.version;
+      } else if (snap.version !== loadedVersion.current) {
+        window.location.reload();
+        return;
+      }
+    }
     setVersion(snap.version);
     setJobs(sortJobs(snap.jobs || []));
     setKpAuth(snap.kpauth || emptyKpAuth);

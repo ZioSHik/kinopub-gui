@@ -2,6 +2,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import {
   ArrowUpCircle,
+  ChevronRight,
   Clapperboard,
   Film,
   Library as LibraryIcon,
@@ -106,7 +107,13 @@ export default function App() {
           kpUserError={kpUserError}
           onClick={() => navigate("settings")}
         />
-        <SystemFooter ffmpegFound={ffmpeg.ffmpegFound} version={version} connected={connected} collapsed={collapsed} />
+        <SystemFooter
+          ffmpegFound={ffmpeg.ffmpegFound}
+          version={version}
+          connected={connected}
+          collapsed={collapsed}
+          onOpenSettings={() => navigate("settings")}
+        />
       </aside>
 
       {/* Main */}
@@ -207,17 +214,27 @@ function ProfileCard({
   const { t } = useI18n();
 
   if (!kpauth.loggedIn) {
+    // A bare "Sign in" button gave no hint that it opens Settings. Spell that
+    // out with a subtitle and a chevron so the destination is obvious.
     return (
       <button
         onClick={onClick}
-        title={collapsed ? t("Sign in") : undefined}
+        title={collapsed ? t("Sign in in Settings") : undefined}
         className={clsx(
           "mb-2 flex items-center gap-2.5 rounded-xl border border-gold-500/25 bg-gold-500/[0.08] p-2.5 text-gold-300 transition hover:bg-gold-500/[0.16]",
           collapsed && "justify-center",
         )}
       >
         <ShieldAlert className="h-5 w-5 shrink-0" />
-        {!collapsed && <span className="text-sm font-medium">{t("Sign in")}</span>}
+        {!collapsed && (
+          <>
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block text-sm font-semibold leading-tight">{t("Sign in")}</span>
+              <span className="block text-[11px] font-medium leading-tight text-gold-300/70">{t("in Settings")}</span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-gold-300/60" />
+          </>
+        )}
       </button>
     );
   }
@@ -295,11 +312,13 @@ function SystemFooter({
   version,
   connected,
   collapsed,
+  onOpenSettings,
 }: {
   ffmpegFound: boolean;
   version: string;
   connected: boolean;
   collapsed: boolean;
+  onOpenSettings: () => void;
 }) {
   const { t } = useI18n();
   if (collapsed) {
@@ -314,15 +333,24 @@ function SystemFooter({
         >
           {connected ? <PlugZap className="h-3.5 w-3.5" /> : <Unplug className="h-3.5 w-3.5" />}
         </span>
-        <span
-          title={ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
-          className={clsx(
-            "grid h-7 w-7 place-items-center rounded-lg",
-            ffmpegFound ? "bg-emerald-500/10 text-emerald-400" : "bg-ember-500/10 text-ember-400",
-          )}
-        >
-          <Film className="h-3.5 w-3.5" />
-        </span>
+        {/* ffmpeg present → a plain status dot; missing → a button that jumps to
+            the Settings install, so the fix is reachable even when collapsed. */}
+        {ffmpegFound ? (
+          <span
+            title={t("ffmpeg ready")}
+            className="grid h-7 w-7 place-items-center rounded-lg bg-emerald-500/10 text-emerald-400"
+          >
+            <Film className="h-3.5 w-3.5" />
+          </span>
+        ) : (
+          <button
+            onClick={onOpenSettings}
+            title={t("ffmpeg missing — install it in Settings")}
+            className="grid h-7 w-7 place-items-center rounded-lg bg-ember-500/10 text-ember-400 transition hover:bg-ember-500/20"
+          >
+            <Film className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
     );
   }
@@ -352,21 +380,31 @@ function SystemFooter({
             )}
           />
         </div>
-        {/* ffmpeg */}
-        <div className="flex items-center gap-2.5 px-1.5 py-1">
-          <span
-            className={clsx(
-              "grid h-7 w-7 shrink-0 place-items-center rounded-lg",
-              ffmpegFound ? "bg-emerald-500/10 text-emerald-400" : "bg-ember-500/10 text-ember-400",
-            )}
+        {/* ffmpeg — a static row when present; a button that jumps to the
+            Settings install when missing, so the fix is one obvious click away. */}
+        {ffmpegFound ? (
+          <div className="flex items-center gap-2.5 px-1.5 py-1">
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-emerald-500/10 text-emerald-400">
+              <Film className="h-4 w-4" />
+            </span>
+            <span className="flex-1 text-[13px] font-medium text-slate-300">{t("ffmpeg ready")}</span>
+          </div>
+        ) : (
+          <button
+            onClick={onOpenSettings}
+            title={t("ffmpeg missing — install it in Settings")}
+            className="flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1 text-left transition hover:bg-white/[0.06]"
           >
-            <Film className="h-4 w-4" />
-          </span>
-          <span className="flex-1 text-[13px] font-medium text-slate-300">
-            {ffmpegFound ? t("ffmpeg ready") : t("ffmpeg missing")}
-          </span>
-          {!ffmpegFound && <span className="h-1.5 w-1.5 rounded-full bg-ember-500" />}
-        </div>
+            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-ember-500/10 text-ember-400">
+              <Film className="h-4 w-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-medium leading-tight text-slate-300">{t("ffmpeg missing")}</span>
+              <span className="block text-[11px] font-medium leading-tight text-ember-400">{t("Install in Settings")}</span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
+          </button>
+        )}
       </div>
       <div className="text-center text-[11px] text-slate-600">{version}</div>
     </div>
