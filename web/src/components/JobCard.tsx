@@ -58,17 +58,28 @@ function epVariant(state: EpisodeView["state"]) {
   }
 }
 
-function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; jobStatus: JobView["status"] }) {
+function EpisodeRow({
+  ep,
+  jobId,
+  jobStatus,
+  hasCompetition,
+}: {
+  ep: EpisodeView;
+  jobId: string;
+  jobStatus: JobView["status"];
+  hasCompetition: boolean;
+}) {
   const { t } = useI18n();
   const { toast } = useApp();
   const [busy, setBusy] = useState(false);
   const jobFinished = jobStatus === "completed" || jobStatus === "failed" || jobStatus === "canceled";
   const jobLive = jobStatus === "running" || jobStatus === "resolving";
   const active = ep.state === "running" && !jobFinished;
-  // Prioritize only matters while the job is actively downloading. Retry shows
-  // for an episode that failed mid-run, or any non-completed episode left behind
-  // when the job has finished (e.g. canceled while it was parked for retry).
-  const canPrioritize = jobLive && (ep.state === "pending" || ep.state === "deferred");
+  // Prioritize only matters while the job is actively downloading AND there is
+  // something to get ahead of — other episodes in this job or another active
+  // download (hasCompetition). A lone episode of the only job has nothing to
+  // jump, so the button would be noise.
+  const canPrioritize = jobLive && hasCompetition && (ep.state === "pending" || ep.state === "deferred");
   // Retry shows for an episode that failed mid-run, or any non-completed episode
   // left behind on a finished job. Not on a paused job — there the right action
   // is Resume (which re-attempts the failed episode), so Retry would contradict
@@ -81,6 +92,11 @@ function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; 
   const canPauseEp =
     jobLive && (ep.state === "pending" || ep.state === "deferred" || ep.state === "running");
   const canResumeEp = jobLive && ep.state === "paused";
+  // Per-episode cancel drops just this episode (siblings keep downloading);
+  // unlike a pause it doesn't keep the run alive. Retry can bring it back.
+  const canCancelEp =
+    jobLive &&
+    (ep.state === "pending" || ep.state === "deferred" || ep.state === "running" || ep.state === "paused");
 
   const act = (fn: () => Promise<unknown>, ok: string) => async () => {
     setBusy(true);
@@ -97,6 +113,7 @@ function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; 
   const prioritizeEp = act(() => api.prioritizeEpisode(jobId, ep.season, ep.episode), t("{ep} moved to the front — downloading next", { ep: ep.key }));
   const pauseEp = act(() => api.pauseEpisode(jobId, ep.season, ep.episode), t("{ep} paused", { ep: ep.key }));
   const resumeEp = act(() => api.resumeEpisode(jobId, ep.season, ep.episode), t("{ep} resumed", { ep: ep.key }));
+  const cancelEp = act(() => api.cancelEpisode(jobId, ep.season, ep.episode), t("{ep} canceled — the rest keep downloading", { ep: ep.key }));
 
   return (
     <div className="rounded-xl border border-white/[0.05] bg-ink-900/40 px-3 py-2.5">
@@ -173,6 +190,16 @@ function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; 
                   <RotateCw className="h-3.5 w-3.5" /> {t("Retry")}
                 </button>
               )}
+              {canCancelEp && (
+                <button
+                  className="btn-ghost px-2 py-0.5 text-ember-400"
+                  onClick={cancelEp}
+                  disabled={busy}
+                  title={t("Cancel this episode — the rest keep downloading")}
+                >
+                  <Ban className="h-3.5 w-3.5" />
+                </button>
+              )}
               <span className="text-xs tabular-nums text-slate-400">
                 {ep.state === "completed" ? "100%" : `${ep.percent}%`}
               </span>
@@ -186,7 +213,11 @@ function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; 
           />
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
             {ep.segTotal > 0 && <span>{ep.segDone}/{ep.segTotal} seg</span>}
-            {ep.total > 0 && <span>{bytes(ep.bytes)} / {bytes(ep.total)}</span>}
+            {ep.total > 0 && (
+              <span title={ep.totalApprox ? t("Estimated size — refines as it downloads (HLS has no fixed total)") : undefined}>
+                {bytes(ep.bytes)} / {ep.totalApprox ? "~" : ""}{bytes(ep.total)}
+              </span>
+            )}
             {active && ep.speedBps > 0 && <span className="text-gold-400/90">{speed(ep.speedBps)}</span>}
             {active && ep.etaSeconds > 0 && <span>{t("ETA")} {eta(ep.etaSeconds, t)}</span>}
             {ep.state === "deferred" && (
@@ -218,7 +249,7 @@ function EpisodeRow({ ep, jobId, jobStatus }: { ep: EpisodeView; jobId: string; 
 }
 
 export function JobCard({ job }: { job: JobView }) {
-  const { toast } = useApp();
+  const { toast, jobs } = useApp();
   const { t } = useI18n();
   const [showEps, setShowEps] = useState(job.status === "running" || job.status === "resolving");
   const [showLogs, setShowLogs] = useState(false);
@@ -438,7 +469,21 @@ export function JobCard({ job }: { job: JobView }) {
       {showEps && totalEps > 0 && (
         <div className="grid gap-2 border-t border-white/[0.05] bg-black/20 p-4 md:grid-cols-2">
           {job.episodes.map((ep) => (
-            <EpisodeRow key={ep.key} ep={ep} jobId={job.id} jobStatus={job.status} />
+            <EpisodeRow
+              key={ep.key}
+              ep={ep}
+              jobId={job.id}
+              jobStatus={job.status}
+              // "Next" needs something to get ahead of: other not-yet-done
+              // episodes here (plan total counts unstarted ones without rows),
+              // or another active download in the queue.
+              hasCompetition={
+                totalEps - doneEps > 1 ||
+                jobs.some(
+                  (o) => o.id !== job.id && ["queued", "resolving", "running"].includes(o.status),
+                )
+              }
+            />
           ))}
         </div>
       )}

@@ -465,6 +465,83 @@ func TestDownloadEpisode_ResumeSkipsExistingSegments(t *testing.T) {
 	}
 }
 
+// seqSink records the full sequence of SegmentProgress calls, so a test can
+// assert WHAT arrived in each report — not just the final totals.
+type seqSink struct {
+	mu      sync.Mutex
+	reports []struct {
+		done  int
+		bytes int64
+	}
+}
+
+func (s *seqSink) TrackProgress(domain.EpisodeKey, domain.TrackRef, int)     {}
+func (s *seqSink) HLSProgress(domain.EpisodeKey, []domain.TrackProgressInfo) {}
+func (s *seqSink) SegmentProgress(_ domain.EpisodeKey, done, _ int, bytes, _ int64) {
+	s.mu.Lock()
+	s.reports = append(s.reports, struct {
+		done  int
+		bytes int64
+	}{done, bytes})
+	s.mu.Unlock()
+}
+
+// On resume, segments already on disk must be published as ONE baseline report
+// BEFORE any download starts — never trickled through the live progress path,
+// which the UI's speed estimator would read as a gigabytes-per-second burst.
+func TestDownloadEpisode_ResumeBaselineReportedFirst(t *testing.T) {
+	master := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.4d401f"
+/720/media.m3u8
+`
+	media := `#EXTM3U
+#EXTINF:6.0,
+/720/seg_0.ts
+#EXTINF:6.0,
+/720/seg_1.ts
+#EXT-X-ENDLIST
+`
+	srv := hlsTestServer(t, map[string]string{
+		"/master.m3u8":    master,
+		"/720/media.m3u8": media,
+		"/720/seg_0.ts":   "SEG0",
+		"/720/seg_1.ts":   "SEG1",
+	})
+	d := newTestDownloader(t, srv.Client())
+	outPath := filepath.Join(t.TempDir(), "ep.ts")
+
+	// A previous attempt left seg_0 (8 bytes) on disk.
+	segDir := filepath.Join(outPath+".hls-tmp", "video")
+	if err := os.MkdirAll(segDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(segDir, "seg_00000.ts"), []byte("RESUMED!"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &seqSink{}
+	res, err := d.DownloadEpisode(context.Background(), srv.URL+"/master.m3u8", "720p", outPath, domain.EpisodeKey{}, sink)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer os.RemoveAll(res.TempDir)
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.reports) < 2 {
+		t.Fatalf("got %d progress reports, want >= 2 (baseline + fresh segment)", len(sink.reports))
+	}
+	// The FIRST report is the resume baseline: exactly the on-disk segment,
+	// before anything downloads.
+	if first := sink.reports[0]; first.done != 1 || first.bytes != 8 {
+		t.Errorf("first report = %d seg / %d bytes, want the 1/8 resume baseline", first.done, first.bytes)
+	}
+	// The fresh segment arrives as a separate, later report.
+	if last := sink.reports[len(sink.reports)-1]; last.done != 2 || last.bytes != 12 {
+		t.Errorf("final report = %d seg / %d bytes, want 2/12", last.done, last.bytes)
+	}
+}
+
 func TestDownloadEpisode_NoVariantsError(t *testing.T) {
 	srv := hlsTestServer(t, map[string]string{"/master.m3u8": "#EXTM3U\n"})
 	d := newTestDownloader(t, srv.Client())

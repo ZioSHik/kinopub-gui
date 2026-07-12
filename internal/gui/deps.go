@@ -40,6 +40,7 @@ func buildEngineDeps(
 	pause <-chan domain.EpisodeKey,
 	resume <-chan domain.EpisodeKey,
 	retry <-chan domain.EpisodeKey,
+	cancel <-chan domain.EpisodeKey,
 	paused func() bool,
 ) (kinopub.Dependencies, error) {
 	proxyProv, err := proxyprovider.New(cfg.ProxyURL)
@@ -111,6 +112,7 @@ func buildEngineDeps(
 	deps.PauseRequests = pause
 	deps.ResumeRequests = resume
 	deps.RetryRequests = retry
+	deps.CancelRequests = cancel
 	deps.Paused = paused
 
 	return deps, nil

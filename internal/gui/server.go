@@ -92,6 +92,10 @@ func NewServer(version string, static fs.FS) *Server {
 		go s.mgr.run(context.Background(), j, j.cfg, j.seedTitles, j.title, j.posterURL, apiClient)
 	}
 	s.mgr.setMaxActive(s.settings.get().MaxActiveJobs)
+	// Restore the persisted queue: downloads interrupted by a restart come back
+	// as paused cards (failed ones keep their error) with Resume/Retry working —
+	// the engine skips completed episodes and continues partial .hls-tmp segments.
+	s.mgr.attachStore(newJobStore())
 	s.routes()
 	return s
 }
@@ -220,6 +224,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/jobs/{id}/pause", s.handlePauseJob)
 	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResumeJob)
 	mux.HandleFunc("POST /api/jobs/{id}/pause-episode", s.handlePauseEpisode)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel-episode", s.handleCancelEpisode)
 	mux.HandleFunc("POST /api/jobs/{id}/resume-episode", s.handleResumeEpisode)
 	mux.HandleFunc("POST /api/jobs/{id}/audio", s.handleAudioAnswer)
 
@@ -630,6 +635,24 @@ func (s *Server) handlePauseEpisode(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.mgr.pauseEpisode(r.PathValue("id"), domain.EpisodeKey{Season: body.Season, Episode: body.Episode}) {
 		writeErr(w, http.StatusConflict, "episode cannot be paused — it is not waiting in this running job")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleCancelEpisode drops a single episode from a running job — its siblings
+// keep downloading; the row settles as failed/"canceled" with a working Retry.
+func (s *Server) handleCancelEpisode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Season  int `json:"season"`
+		Episode int `json:"episode"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !s.mgr.cancelEpisode(r.PathValue("id"), domain.EpisodeKey{Season: body.Season, Episode: body.Episode}) {
+		writeErr(w, http.StatusConflict, "episode cannot be canceled — it is not active in this running job")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

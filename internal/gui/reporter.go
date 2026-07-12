@@ -157,6 +157,7 @@ func (r *eventReporter) ByteProgress(key domain.EpisodeKey, downloaded, total in
 	ev := r.job.ensureEpisode(key)
 	ev.Bytes = downloaded
 	ev.Total = total
+	ev.TotalApprox = false // progressive download reports the real Content-Length
 	if total > 0 {
 		ev.Percent = clampPct(int(downloaded * 100 / total))
 	}
@@ -173,6 +174,7 @@ func (r *eventReporter) SegmentProgress(key domain.EpisodeKey, doneSegments, tot
 	ev.SegTotal = totalSegments
 	ev.Bytes = downloadedBytes
 	ev.Total = approxTotalBytes
+	ev.TotalApprox = true // HLS total is estimated from average segment size
 	if totalSegments > 0 {
 		ev.Percent = clampPct(doneSegments * 100 / totalSegments)
 	}

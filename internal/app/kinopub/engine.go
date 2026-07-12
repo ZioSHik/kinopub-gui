@@ -239,9 +239,11 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		pausedHold []*pendingEpisode                 // episodes held aside by a per-episode pause
 		epCancels  = map[string]context.CancelFunc{} // per-episode cancel for in-flight downloads
 		pauseMark  = map[string]bool{}               // in-flight episodes to hold (not fail) when their attempt returns
+		cancelMark = map[string]bool{}               // episodes canceled by the user: fail as "canceled", never re-park
 		inFlight   int
 		winding    bool // set once workers have exited; the control goroutine stops mutating
 	)
+	errEpisodeCanceled := fmt.Errorf("canceled")
 	// epInfo lets the live-retry control reconstruct a pending unit for any
 	// selected episode by key (after it has failed and left the queues).
 	epInfo := make(map[string]struct {
@@ -293,6 +295,18 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		// stop just this download while its siblings keep going.
 		epCtx, epCancel := context.WithCancel(ctx)
 		mu.Lock()
+		// A cancel that raced the dispatch gap (requested after this episode left
+		// the queues but before its cancel func was registered) lands here: drop
+		// the episode without starting the attempt.
+		if cancelMark[ks] {
+			delete(cancelMark, ks)
+			failed++
+			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: errEpisodeCanceled, Attempts: pe.attempts})
+			mu.Unlock()
+			epCancel()
+			e.deps.ProgressReporter.EpisodeFailed(pe.ep.Key, errEpisodeCanceled)
+			return
+		}
 		epCancels[ks] = epCancel
 		mu.Unlock()
 
@@ -302,8 +316,24 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		delete(epCancels, ks)
 		pausedHere := pauseMark[ks]
 		delete(pauseMark, ks)
+		canceledHere := cancelMark[ks]
+		delete(cancelMark, ks)
 		mu.Unlock()
 		epCancel() // release ctx resources
+
+		// A per-episode cancel stopped this download: tally it as failed
+		// ("canceled") — it is NOT re-parked and does NOT keep the run alive.
+		// Partial segments are kept so a later per-episode Retry resumes them.
+		// Cancel wins over a simultaneous pause; success still wins over both if
+		// the download finished in the same instant.
+		if canceledHere && res != epSuccess && ctx.Err() == nil {
+			mu.Lock()
+			failed++
+			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: errEpisodeCanceled, Attempts: pe.attempts})
+			mu.Unlock()
+			e.deps.ProgressReporter.EpisodeFailed(pe.ep.Key, errEpisodeCanceled)
+			return
+		}
 
 		// A per-episode pause (this episode's own ctx was canceled while the whole
 		// run is still alive): hold it aside, keeping its partial segments, without
@@ -567,10 +597,54 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		return nil, 0, true
 	}
 
-	// Live-control goroutine: applies pause / resume / retry requests promptly,
-	// even mid-download (a pause cancels the episode's own context; a resume or
-	// retry re-queues it). It runs alongside the workers and stops when the run
-	// ends. Requests for episodes that aren't applicable are no-ops.
+	// hasOutcome reports whether the episode has already been tallied (succeeded
+	// OR failed) in this run. Caller must hold mu.
+	hasOutcome := func(ks string) bool {
+		for _, o := range outcomes {
+			if episodeKeyStr(o.Key) == ks {
+				return true
+			}
+		}
+		return false
+	}
+
+	// applyCancelLocked drops an episode from this run for a per-episode cancel:
+	// an in-flight download is marked + its context canceled (processOne tallies
+	// it as canceled when the attempt returns); a queued/parked/held episode is
+	// pulled out and returned so the CALLER tallies it (the progress reporter
+	// must be called outside mu). An episode already tallied is a no-op. When the
+	// episode is in the dispatch gap (neither queued nor registered in-flight),
+	// the mark alone makes processOne drop it before the attempt starts. Caller
+	// must hold mu.
+	cancelReq := e.deps.CancelRequests
+	applyCancelLocked := func(key domain.EpisodeKey) *pendingEpisode {
+		if winding {
+			return nil
+		}
+		ks := episodeKeyStr(key)
+		if hasOutcome(ks) {
+			return nil // already succeeded/failed — nothing to cancel
+		}
+		if c := epCancels[ks]; c != nil {
+			cancelMark[ks] = true
+			c() // stop this episode's download now
+			return nil
+		}
+		if pe := takeFromQueues(key); pe != nil {
+			return pe
+		}
+		if pe := takeFromHold(key); pe != nil {
+			return pe
+		}
+		cancelMark[ks] = true // dispatch gap — processOne drops it on pickup
+		return nil
+	}
+
+	// Live-control goroutine: applies pause / resume / retry / cancel requests
+	// promptly, even mid-download (a pause or cancel stops the episode's own
+	// context; a resume or retry re-queues it). It runs alongside the workers and
+	// stops when the run ends. Requests for episodes that aren't applicable are
+	// no-ops.
 	resumeReq := e.deps.ResumeRequests
 	retryReq := e.deps.RetryRequests
 	stopCtrl := make(chan struct{})
@@ -587,6 +661,17 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				mu.Lock()
 				applyPauseLocked(key)
 				mu.Unlock()
+			case key := <-cancelReq:
+				mu.Lock()
+				pe := applyCancelLocked(key)
+				if pe != nil {
+					failed++
+					outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: errEpisodeCanceled, Attempts: pe.attempts})
+				}
+				mu.Unlock()
+				if pe != nil {
+					e.deps.ProgressReporter.EpisodeFailed(pe.ep.Key, errEpisodeCanceled)
+				}
 			case key := <-resumeReq:
 				ks := episodeKeyStr(key)
 				mu.Lock()

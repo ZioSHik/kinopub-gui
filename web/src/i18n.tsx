@@ -146,6 +146,8 @@ const RU: Record<string, string> = {
   "Resume this episode": "Продолжить эту серию",
   "{ep} paused": "{ep} на паузе",
   "{ep} resumed": "{ep} продолжается",
+  "{ep} canceled — the rest keep downloading": "{ep} отменена — остальные качаются дальше",
+  "Cancel this episode — the rest keep downloading": "Отменить эту серию — остальные продолжат качаться",
   "Paused — progress is kept": "Пауза — прогресс сохранён",
   "Resuming — continuing where it stopped…": "Продолжаю с места остановки…",
   "Retrying — re-downloading what failed…": "Повтор — докачиваю то, что не удалось…",
@@ -158,6 +160,8 @@ const RU: Record<string, string> = {
   "Moved to the front of the queue": "Перемещено в начало очереди",
   "Stopping job…": "Останавливаю…",
   "retrying (attempt {n})": "повтор (попытка {n})",
+  "Estimated size — refines as it downloads (HLS has no fixed total)":
+    "Оценка размера — уточняется по мере загрузки (у HLS нет фиксированного итога)",
 
   // Library
   "Downloads found in your output folders": "Загрузки из ваших папок",

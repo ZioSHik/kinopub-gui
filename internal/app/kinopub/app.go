@@ -44,6 +44,13 @@ type Dependencies struct {
 	// (re-attempting it in place, without a new job). nil disables live retry.
 	RetryRequests <-chan domain.EpisodeKey
 
+	// Optional: CancelRequests drops an individual episode from this run entirely:
+	// an in-flight download is stopped, a queued/parked/held one is removed from
+	// the work queues. Unlike a pause the run does NOT stay alive for it — the
+	// episode is tallied as failed ("canceled") and its siblings keep going. nil
+	// disables per-episode cancel.
+	CancelRequests <-chan domain.EpisodeKey
+
 	// Optional: Paused reports whether the whole run is being paused (as opposed
 	// to canceled). When it returns true on exit, partial segment data (.hls-tmp)
 	// is preserved so a later resume continues instead of restarting. nil ⇒ never

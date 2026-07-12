@@ -323,25 +323,22 @@ func (d *Downloader) downloadEpisodeInternal(
 	// are downloaded concurrently across tracks.
 	var progMu sync.Mutex
 
-	// updateTrack records progress for a single track (by index) and emits a
-	// progress report covering the aggregate percent, total estimated size, and
-	// the full per-track breakdown. Safe for concurrent use.
-	updateTrack := func(trackIdx int, segBytes int64) {
-		progMu.Lock()
-		defer progMu.Unlock()
-
+	// recordSegLocked counts one finished segment for a track. Caller holds progMu.
+	recordSegLocked := func(trackIdx int, segBytes int64) {
 		ti := &trackInfos[trackIdx]
 		ti.DoneSegments++
 		ti.DownloadedBytes += segBytes
 		if ti.DoneSegments > 0 && ti.TotalSegments > 0 {
 			ti.ApproxTotalBytes = ti.DownloadedBytes / int64(ti.DoneSegments) * int64(ti.TotalSegments)
 		}
+	}
 
+	// reportLocked emits a progress report covering the aggregate percent, total
+	// estimated size, and the full per-track breakdown. Caller holds progMu.
+	reportLocked := func() {
 		if sink == nil {
 			return
 		}
-
-		// Aggregate across all tracks.
 		var (
 			doneSegments int
 			totalBytes   int64
@@ -370,6 +367,15 @@ func (d *Downloader) downloadEpisodeInternal(
 		} else if byteSink, ok := sink.(domain.ByteProgressSink); ok {
 			byteSink.ByteProgress(key, totalBytes, approxTotal)
 		}
+	}
+
+	// updateTrack records progress for a single freshly-downloaded segment and
+	// emits a progress report. Safe for concurrent use.
+	updateTrack := func(trackIdx int, segBytes int64) {
+		progMu.Lock()
+		defer progMu.Unlock()
+		recordSegLocked(trackIdx, segBytes)
+		reportLocked()
 	}
 
 	// Shared semaphore bounding the number of segments fetched in parallel
@@ -416,9 +422,12 @@ func (d *Downloader) downloadEpisodeInternal(
 			}
 			segPath := filepath.Join(segDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
 
-			// Resume: skip already-downloaded segments.
+			// Resume: skip already-downloaded segments SILENTLY — they were counted
+			// by the pre-scan baseline before the workers started. Re-reporting them
+			// here would stream multi-GB byte deltas through the live progress path
+			// in under a second, which the UI's speed/ETA estimator reads as a
+			// gigabytes-per-second download.
 			if info, statErr := os.Stat(segPath); statErr == nil && info.Size() > 0 {
-				updateTrack(trackIdx, info.Size())
 				continue
 			}
 
@@ -477,6 +486,37 @@ func (d *Downloader) downloadEpisodeInternal(
 	videoDir := filepath.Join(tmpDir, "video")
 	videoPath := filepath.Join(tmpDir, "video.ts")
 	resultAudio := make([]domain.HLSAudioTrack, len(audioJobs))
+
+	// Resume pre-scan: count segments left by a previous attempt into the track
+	// totals BEFORE the workers start, and publish them as ONE baseline report.
+	// The UI's speed estimator measures byte deltas between reports, so resumed
+	// data must arrive in the very first report (which only sets the baseline) —
+	// trickling it through the live path would read as GB/s of "download speed".
+	// Runs before the track goroutines exist, so trackInfos access is safe.
+	preScan := func(trackIdx int, segments []Segment, segDir string) int {
+		n := 0
+		for _, seg := range segments {
+			p := filepath.Join(segDir, fmt.Sprintf("seg_%05d.ts", seg.Index))
+			if info, err := os.Stat(p); err == nil && info.Size() > 0 {
+				recordSegLocked(trackIdx, info.Size())
+				n++
+			}
+		}
+		return n
+	}
+	resumed := preScan(0, videoPlaylist.Segments, videoDir)
+	for ai, aj := range audioJobs {
+		resumed += preScan(1+ai, aj.playlist.Segments, filepath.Join(tmpDir, fmt.Sprintf("audio_%d", ai)))
+	}
+	if resumed > 0 {
+		progMu.Lock()
+		reportLocked()
+		progMu.Unlock()
+		d.logger.Info("resuming from partial segments",
+			domain.F("episode", epLabel),
+			domain.F("resumed_segments", resumed),
+		)
+	}
 
 	var (
 		trackWG  sync.WaitGroup

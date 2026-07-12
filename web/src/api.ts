@@ -26,6 +26,7 @@ export interface EpisodeView {
   percent: number;
   bytes: number;
   total: number;
+  totalApprox?: boolean; // total is an estimate (HLS), not a known size
   speedBps: number;
   etaSeconds: number;
   segDone: number;
@@ -468,6 +469,8 @@ export const api = {
   resumeJob: (id: string) => req<{ ok: boolean }>("POST", `/api/jobs/${id}/resume`),
   pauseEpisode: (id: string, season: number, episode: number) =>
     req<{ ok: boolean }>("POST", `/api/jobs/${id}/pause-episode`, { season, episode }),
+  cancelEpisode: (id: string, season: number, episode: number) =>
+    req<{ ok: boolean }>("POST", `/api/jobs/${id}/cancel-episode`, { season, episode }),
   resumeEpisode: (id: string, season: number, episode: number) =>
     req<{ ok: boolean }>("POST", `/api/jobs/${id}/resume-episode`, { season, episode }),
   deleteJob: (id: string) => req<{ removed: boolean }>("DELETE", `/api/jobs/${id}`),
