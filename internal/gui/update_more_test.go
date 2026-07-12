@@ -170,3 +170,17 @@ func TestUpdateStatus_Caching(t *testing.T) {
 		t.Errorf("non-forced status should use the fresh cache, got %+v", st)
 	}
 }
+
+// The binary download must NOT go through the API client: http.Client.Timeout
+// bounds the whole request including the body, and 20s kills a ~10 MB asset on
+// any route slower than ~0.5 MB/s ("context deadline exceeded while reading
+// body"). The download client relies on the caller's context instead.
+func TestDownloadClientHasNoTotalTimeout(t *testing.T) {
+	u := newUpdateChecker("v1.0.0")
+	if got := u.httpClient().Timeout; got == 0 {
+		t.Error("API client must keep a total timeout (status endpoint responsiveness)")
+	}
+	if got := u.downloadClient().Timeout; got != 0 {
+		t.Errorf("download client Timeout = %v, want 0 (bounded by ctx, not a total cap)", got)
+	}
+}

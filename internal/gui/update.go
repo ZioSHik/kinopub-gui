@@ -68,8 +68,20 @@ func newUpdateChecker(current string) *updateChecker {
 	return &updateChecker{current: current}
 }
 
+// httpClient is for small requests (release metadata, checksums.txt): a tight
+// total timeout keeps a wedged GitHub API from hanging the status endpoint.
 func (u *updateChecker) httpClient() *http.Client {
 	return &http.Client{Timeout: 20 * time.Second}
+}
+
+// downloadClient is for the multi-megabyte binary download. http.Client.Timeout
+// bounds the WHOLE request including reading the body, so any value tight
+// enough for API calls kills a ~10 MB download on a slow route (20s would
+// demand a sustained 0.5 MB/s). No total timeout here: the download is bounded
+// by the caller's context (10 min in the apply handler) and the byte cap in
+// downloadTo; connect/TLS timeouts come from the default transport.
+func (u *updateChecker) downloadClient() *http.Client {
+	return &http.Client{}
 }
 
 // isDevBuild reports whether the current version is not a real release tag, in
@@ -207,7 +219,7 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 		os.Remove(tmpName) // no-op once renamed into place
 	}()
 
-	sum, err := downloadTo(ctx, u.httpClient(), assetURL, tmp, 200<<20)
+	sum, err := downloadTo(ctx, u.downloadClient(), assetURL, tmp, 200<<20)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}

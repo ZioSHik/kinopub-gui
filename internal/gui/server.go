@@ -363,8 +363,9 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	// Run on a background context with a generous timeout so a slow download
-	// isn't aborted if the request context is cancelled mid-way.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// isn't aborted if the request context is cancelled mid-way. 10 minutes
+	// accommodates a ~10 MB asset even on a very slow route (~20 KB/s).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	version, err := s.updater.apply(ctx)
 	cancel()
 	if err != nil {
