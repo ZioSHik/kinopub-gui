@@ -84,6 +84,14 @@ chmod +x kinopub-gui-darwin-arm64
 
 On **macOS** you can instead grab the `.dmg` and drag **KinoPub** to Applications — it runs as a menu-bar app (no Dock icon; the status-bar item has *Open* and *Quit*).
 
+The app isn't signed with an Apple certificate, so macOS blocks the first launch. Unblocking it is a one-time step:
+
+1. Drag **KinoPub** from the disk image into **Applications** and launch it from there.
+2. macOS will warn that it can't verify the app — dismiss the dialog (**Done**).
+3. Open **System Settings → Privacy & Security**, scroll down to the message about KinoPub and click **Open Anyway**, then confirm with your password or Touch ID.
+
+After that it opens normally. On older macOS (Sonoma and earlier) a right-click on the app → **Open** → **Open** is enough.
+
 On **Windows**, download `kinopub-gui-windows-amd64.exe` and run it (double-click or from a terminal):
 
 ```powershell
@@ -91,7 +99,7 @@ On **Windows**, download `kinopub-gui-windows-amd64.exe` and run it (double-clic
 # → opens http://127.0.0.1:8765 in your browser
 ```
 
-> The binary is unsigned, so SmartScreen / Gatekeeper may warn on first run — on Windows choose **More info → Run anyway**; on macOS right-click → **Open**. Windows Firewall may also prompt; the server only listens locally, so allowing private-network access is enough. Credentials are stored encrypted at `~/.config/kinopub/credentials.enc` (`%USERPROFILE%\.config\kinopub\credentials.enc` on Windows).
+> The binary is unsigned, so SmartScreen / Gatekeeper may warn on first run — on Windows choose **More info → Run anyway**; on macOS follow the steps above (**Privacy & Security → Open Anyway**). Windows Firewall may also prompt; the server only listens locally, so allowing private-network access is enough. Credentials are stored encrypted at `~/.config/kinopub/credentials.enc` (`%USERPROFILE%\.config\kinopub\credentials.enc` on Windows).
 
 ### Option B — build from source
 
