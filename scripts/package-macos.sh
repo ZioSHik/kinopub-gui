@@ -51,6 +51,17 @@ cp "$ICNS" "$APP/Contents/Resources/AppIcon.icns"
 echo "==> go build ./cmd/$EXE ($GOARCH)"
 # CGO on so the Cocoa app shell (Dock icon + ⌘Q, applife_darwin.go) is compiled
 # in; GOARCH set so this also cross-builds the Intel slice on an arm64 runner.
+#
+# Without an explicit deployment target clang stamps the build host's macOS
+# version into LC_BUILD_VERSION minos, and Launch Services then refuses to run
+# the app on anything older ("this version of macOS is not supported"). 12.0 is
+# the floor: Go 1.25+ itself requires macOS 12 Monterey. The -mmacosx-version-min
+# flags go through CGO_CFLAGS/CGO_LDFLAGS because those are part of Go's build
+# cache key — MACOSX_DEPLOYMENT_TARGET alone leaves stale cached objects behind.
+MACOS_MIN="12.0"
+export MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN"
+export CGO_CFLAGS="-mmacosx-version-min=$MACOS_MIN"
+export CGO_LDFLAGS="-mmacosx-version-min=$MACOS_MIN"
 GOOS=darwin GOARCH="$GOARCH" CGO_ENABLED=1 go build -trimpath \
   -ldflags "-s -w -X main.version=$VERSION" \
   -o "$APP/Contents/MacOS/$EXE" "./cmd/$EXE"
@@ -69,7 +80,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>CFBundleVersion</key>         <string>$SHORT_VERSION</string>
   <key>CFBundleShortVersionString</key> <string>$SHORT_VERSION</string>
-  <key>LSMinimumSystemVersion</key>  <string>11.0</string>
+  <key>LSMinimumSystemVersion</key>  <string>$MACOS_MIN</string>
   <key>NSHighResolutionCapable</key> <true/>
   <!-- Menu-bar app: no Dock icon. The status-bar item (systray) provides Open
        and Quit, so there's nothing to lose by staying out of the Dock. -->
