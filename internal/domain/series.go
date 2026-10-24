@@ -25,10 +25,11 @@ type Season struct {
 type Episode struct {
 	Key          EpisodeKey
 	Title        string
-	Quality      string        // declared quality, e.g. "1080p"
+	Quality      string // declared quality, e.g. "1080p"
 	PageLink     string
 	Duration     time.Duration // media duration for progress computation
 	MediaSources []MediaSource // at least one (Req 2.3)
+	Subtitles    []SubtitleSource
 }
 
 // EpisodeKey uniquely identifies an episode within a series.

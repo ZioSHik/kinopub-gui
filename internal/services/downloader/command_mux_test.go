@@ -1,11 +1,38 @@
 package downloader
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
+
+func TestBuildHLSMuxArgsMapsAndLabelsSubtitles(t *testing.T) {
+	for _, audioCount := range []int{0, 2} {
+		for _, ext := range []string{"mkv", "mp4"} {
+			hls := &domain.HLSDownloadResult{VideoPath: "/video.ts", AudioTracks: make([]domain.HLSAudioTrack, audioCount), SubtitleTracks: []domain.HLSSubtitleTrack{
+				{Path: "/ru.srt", Name: "Russian", Language: "ru"},
+				{Path: "/en.vtt", Name: "English", Language: "en"},
+			}}
+			args := BuildHLSMuxArgs(domain.Job{}, hls, "/output."+ext+".tmp")
+			for i, sub := range hls.SubtitleTracks {
+				if !containsPair(args, "-i", sub.Path) || !containsPair(args, "-map", fmt.Sprintf("%d:s:0", audioCount+i+1)) {
+					t.Fatalf("subtitle input/map missing with %d audio inputs: %v", audioCount, args)
+				}
+			}
+			if !containsPair(args, "-metadata:s:s:0", "language=rus") || !containsPair(args, "-metadata:s:s:1", "language=eng") {
+				t.Fatalf("subtitle languages missing: %v", args)
+			}
+			if ext == "mp4" && !containsPair(args, "-c:s", "mov_text") {
+				t.Fatal("MP4 needs mov_text subtitles")
+			}
+			if ext == "mkv" && !containsPair(args, "-c:s:1", "srt") {
+				t.Fatal("WebVTT must be converted for Matroska")
+			}
+		}
+	}
+}
 
 // indexOf returns the index of the first occurrence of val in args, or -1.
 func indexOf(args []string, val string) int {

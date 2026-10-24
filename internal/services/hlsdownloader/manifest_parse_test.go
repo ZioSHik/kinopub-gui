@@ -126,9 +126,12 @@ func TestParseMasterPlaylist_VariantsAndAudio(t *testing.T) {
 		t.Errorf("variant[0] URL = %q", v0.URL)
 	}
 
-	// Only AUDIO media entries are captured; SUBTITLES ignored.
+	// Subtitle renditions are kept separately from audio.
 	if len(master.Audio) != 2 {
-		t.Fatalf("got %d audio renditions, want 2 (subtitles ignored)", len(master.Audio))
+		t.Fatalf("got %d audio renditions, want 2", len(master.Audio))
+	}
+	if len(master.Subtitles) != 1 || master.Subtitles[0].URI != "https://cdn.example/v/subs/ru.m3u8" {
+		t.Fatalf("subtitle rendition was lost: %+v", master.Subtitles)
 	}
 	if master.Audio[0].Name != "Дубляж (RUS)" || master.Audio[0].Language != "rus" {
 		t.Errorf("audio[0] = %+v", master.Audio[0])

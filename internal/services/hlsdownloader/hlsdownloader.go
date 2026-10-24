@@ -34,11 +34,12 @@ const (
 
 // Downloader downloads HLS streams by fetching individual segments.
 type Downloader struct {
-	client      *http.Client
-	auth        domain.RequestAuth
-	logger      domain.Logger
-	concurrency int
-	proxyURL    *url.URL
+	client         *http.Client
+	subtitleClient *http.Client
+	auth           domain.RequestAuth
+	logger         domain.Logger
+	concurrency    int
+	proxyURL       *url.URL
 
 	mu        sync.RWMutex
 	audioPref domain.AudioPreference
@@ -114,6 +115,18 @@ func New(client *http.Client, auth domain.RequestAuth, logger domain.Logger, opt
 	// The regular Go HTTP client gets throttled by Cloudflare/CDN due to
 	// its distinctive TLS fingerprint.
 	d.client = httpx.NewBrowserClient(d.proxyURL)
+	// Use the regular client for small subtitle resources: the browser
+	// transport caused repeated CDN timeouts during multi-track downloads.
+	d.subtitleClient = client
+	if d.subtitleClient == nil {
+		d.subtitleClient = &http.Client{Transport: &http.Transport{
+			DialContext:         httpx.NewDialer().DialContext,
+			Proxy:               http.ProxyURL(d.proxyURL),
+			MaxIdleConns:        32,
+			MaxIdleConnsPerHost: 16,
+			IdleConnTimeout:     90 * time.Second,
+		}}
+	}
 	return d
 }
 
@@ -262,6 +275,9 @@ func (d *Downloader) downloadEpisodeInternal(
 			infos[i] = domain.AudioTrackInfo{Index: i, Name: a.Name, Language: a.Language}
 		}
 		keep, fellBack := domain.SelectAudioResolved(infos, pref)
+		if fellBack && pref.RequiresOriginal() {
+			return nil, fmt.Errorf("requested original soundtrack is unavailable for %s; refusing to substitute another voiceover", epLabel)
+		}
 		audioFellBack = fellBack
 		filtered := make([]AudioRendition, 0, len(keep))
 		var keptLabels []string
@@ -312,6 +328,9 @@ func (d *Downloader) downloadEpisodeInternal(
 	for i, a := range audioRenditions {
 		ap, err := FetchMediaPlaylist(ctx, d.client, a.URI, d.auth)
 		if err != nil {
+			if pref.RequiresOriginal() {
+				return nil, fmt.Errorf("requested original audio playlist %q failed: %w", a.Name, err)
+			}
 			d.logger.Warn("audio playlist fetch failed, skipping track",
 				domain.F("episode", epLabel),
 				domain.F("audio", a.Name),
@@ -601,6 +620,18 @@ func (d *Downloader) downloadEpisodeInternal(
 		}(ai, aj)
 	}
 
+	var resultSubtitles []domain.HLSSubtitleTrack
+	trackWG.Add(1)
+	go func() {
+		defer trackWG.Done()
+		tracks, err := d.downloadSubtitleRenditions(ctx, master, selected, tmpDir)
+		if err != nil {
+			recordErr(fmt.Errorf("subtitle tracks: %w", err))
+			return
+		}
+		resultSubtitles = tracks
+	}()
+
 	trackWG.Wait()
 
 	if trackErr != nil {
@@ -631,14 +662,15 @@ func (d *Downloader) downloadEpisodeInternal(
 	}
 
 	return &domain.HLSDownloadResult{
-		Resolution:    selected.Resolution,
-		BitrateKbps:   selected.BitrateKbps(),
-		Codec:         codec,
-		TotalBytes:    totalBytes,
-		VideoPath:     videoPath,
-		AudioTracks:   resultAudio,
-		AudioFallback: audioFellBack,
-		TempDir:       tmpDir,
+		Resolution:     selected.Resolution,
+		BitrateKbps:    selected.BitrateKbps(),
+		Codec:          codec,
+		TotalBytes:     totalBytes,
+		VideoPath:      videoPath,
+		AudioTracks:    resultAudio,
+		SubtitleTracks: resultSubtitles,
+		AudioFallback:  audioFellBack,
+		TempDir:        tmpDir,
 	}, nil
 }
 

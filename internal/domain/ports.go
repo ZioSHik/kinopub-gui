@@ -176,11 +176,16 @@ type AudioChooser interface {
 	ChooseAudio(tracks []AudioTrackInfo, timeout time.Duration) ([]int, error)
 }
 
-// HLSMuxer muxes downloaded HLS video + audio files into a final container.
+// HLSMuxer muxes downloaded video, audio and subtitle files into a final container.
 type HLSMuxer interface {
 	// MuxHLS combines the video file and audio tracks into job.OutPath using
 	// ffmpeg (-c copy), applying labels, languages, and metadata.
 	MuxHLS(ctx context.Context, job Job, hls *HLSDownloadResult) error
+}
+
+// SubtitleDownloader fetches external subtitle files into the episode's temporary directory.
+type SubtitleDownloader interface {
+	DownloadSubtitles(ctx context.Context, sources []SubtitleSource, dir string) ([]HLSSubtitleTrack, error)
 }
 
 // HLSDownloadResult contains info about a completed HLS download.
@@ -194,7 +199,8 @@ type HLSDownloadResult struct {
 	VideoPath string
 	// AudioTracks are the local audio files downloaded separately (demuxed HLS).
 	// Empty when audio is muxed into the video stream.
-	AudioTracks []HLSAudioTrack
+	AudioTracks    []HLSAudioTrack
+	SubtitleTracks []HLSSubtitleTrack
 	// AudioFallback marks the tracks above as a SUBSTITUTE: the requested
 	// voiceover was not among this episode's renditions, so the selection fell
 	// back to another one (see SelectAudioResolved). kino.pub's dub line-up drifts
@@ -212,6 +218,14 @@ type HLSAudioTrack struct {
 	Language string // language tag, e.g. "ru"
 }
 
+// HLSSubtitleTrack is a local subtitle file ready to mux alongside video and audio.
+type HLSSubtitleTrack struct {
+	Path     string
+	Name     string
+	Language string
+	Forced   bool
+}
+
 // PageScraper extracts playlist data from kino.watch pages.
 type PageScraper interface {
 	// ExtractAllSeasons fetches all seasons' playlists from a page URL.
@@ -220,13 +234,14 @@ type PageScraper interface {
 
 // PagePlaylist holds extracted playlist data from a kino.watch page.
 type PagePlaylist struct {
-	ItemID   int
-	Title    string
-	Poster   string
-	Type     string   // kino.watch item type: movie, serial, documovie, …
-	Genres   []string // genre titles
-	Episodes []PageEpisode
-	Seasons  []PageSeason
+	ItemID            int
+	Title             string
+	Poster            string
+	Type              string   // kino.watch item type: movie, serial, documovie, …
+	Genres            []string // genre titles
+	OriginalLanguages []string // languages explicitly marked as original by the API
+	Episodes          []PageEpisode
+	Seasons           []PageSeason
 }
 
 // PageEpisode is a single episode from the page playlist.
@@ -237,6 +252,7 @@ type PageEpisode struct {
 	Duration     int // seconds
 	Season       int
 	Episode      int
+	Subtitles    []SubtitleSource
 }
 
 // PageSeason is season metadata from the page.

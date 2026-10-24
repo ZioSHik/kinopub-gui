@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,9 @@ type AudioTrackInfo struct {
 //
 // The zero value (no Include, no Exclude) means "keep every track".
 type AudioPreference struct {
+	// OriginalLanguage comes from the item's API metadata. It identifies an
+	// original rendition whose HLS label is only "Track N (LANG)".
+	OriginalLanguage string
 	// Include lists patterns to keep. A track is kept when its name or language
 	// contains any Include pattern (case-insensitive). When Include is empty,
 	// every track is kept (subject to Exclude).
@@ -81,6 +85,30 @@ func (s AudioSpec) matches(t AudioTrackInfo) bool {
 func (p AudioPreference) IsAll() bool {
 	return len(p.Include) == 0 && len(p.Exclude) == 0 && len(p.Specs) == 0
 }
+
+// RequiresOriginal reports an explicit request for the original soundtrack.
+func (p AudioPreference) RequiresOriginal() bool {
+	for _, token := range p.Include {
+		if isOriginalToken(token) {
+			return true
+		}
+	}
+	for _, spec := range p.Specs {
+		for _, token := range spec.Require {
+			if isOriginalToken(token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isOriginalToken(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "оригинал" || s == "original"
+}
+
+var genericAudioName = regexp.MustCompile(`(?i)^\s*(track|дорожка)\s+\d+(\s*\([^)]*\))?\s*$`)
 
 // langAliases maps common language spellings to a canonical ISO 639-2 code so
 // that "ru", "rus", "russian" and "русский" all compare equal.
@@ -174,6 +202,20 @@ func SelectAudio(tracks []AudioTrackInfo, pref AudioPreference) []int {
 func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices []int, fellBack bool) {
 	if len(tracks) == 0 {
 		return nil, false
+	}
+	if pref.OriginalLanguage != "" {
+		// Only enrich generic labels. A named English dub/commentary must not
+		// become an original merely because it shares the original's language.
+		tracks = append([]AudioTrackInfo(nil), tracks...)
+		for i, track := range tracks {
+			lang := normLang(track.Language)
+			if lang == "" {
+				lang = parseTrailingLang(track.Name)
+			}
+			if lang == normLang(pref.OriginalLanguage) && genericAudioName.MatchString(track.Name) {
+				tracks[i].Name += " Оригинал Original"
+			}
+		}
 	}
 
 	// 0. Exact spec selection (from the GUI picker) supersedes Include/Exclude.

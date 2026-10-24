@@ -11,13 +11,14 @@ import (
 
 // Variant represents a single quality variant from an HLS master playlist.
 type Variant struct {
-	Bandwidth  int    // bits per second
-	Resolution string // e.g. "1920x1080"
-	Codecs     string // e.g. "avc1.640028,mp4a.40.2"
-	URL        string // media playlist URL (relative or absolute)
-	Width      int    // parsed from Resolution
-	Height     int    // parsed from Resolution
-	AudioGroup string // GROUP-ID of associated audio renditions (empty = muxed)
+	Bandwidth     int    // bits per second
+	Resolution    string // e.g. "1920x1080"
+	Codecs        string // e.g. "avc1.640028,mp4a.40.2"
+	URL           string // media playlist URL (relative or absolute)
+	Width         int    // parsed from Resolution
+	Height        int    // parsed from Resolution
+	AudioGroup    string // GROUP-ID of associated audio renditions (empty = muxed)
+	SubtitleGroup string // GROUP-ID of external WebVTT renditions
 }
 
 // IsH265 reports whether this variant uses HEVC/H.265 codec.
@@ -43,7 +44,19 @@ func (v Variant) Label() string {
 	if v.IsH265() {
 		codec = "h265"
 	}
-	return fmt.Sprintf("%dp/%s (%d kbps)", v.Height, codec, v.BitrateKbps())
+	return fmt.Sprintf("%dp/%s (%d kbps)", v.qualityHeight(), codec, v.BitrateKbps())
+}
+
+// widthClasses maps a standard rendition width to its nominal height.
+var widthClasses = map[int]int{3840: 2160, 1920: 1080, 1280: 720, 854: 480, 720: 480, 640: 360}
+
+// qualityHeight retains the rendition class when black bars have been cropped:
+// a 1280x534 stream is still the source's 720p rendition, not a 534p tier.
+func (v Variant) qualityHeight() int {
+	if h := widthClasses[v.Width]; h > v.Height {
+		return h
+	}
+	return v.Height
 }
 
 // SelectVariant chooses the best variant based on quality preference.
@@ -80,7 +93,7 @@ func selectOptimal(variants []Variant) Variant {
 	// Try: 1080p h264 ≤ 3000 kbps
 	var candidates []Variant
 	for _, v := range variants {
-		if v.Height == 1080 && v.IsH264() && v.BitrateKbps() <= 3000 {
+		if v.qualityHeight() == 1080 && v.IsH264() && v.BitrateKbps() <= 3000 {
 			candidates = append(candidates, v)
 		}
 	}
@@ -91,7 +104,7 @@ func selectOptimal(variants []Variant) Variant {
 
 	// Try: 720p h264
 	for _, v := range variants {
-		if v.Height == 720 && v.IsH264() {
+		if v.qualityHeight() == 720 && v.IsH264() {
 			candidates = append(candidates, v)
 		}
 	}
@@ -156,7 +169,7 @@ func selectExplicit(variants []Variant, pref string) (Variant, error) {
 	// Filter by height.
 	var candidates []Variant
 	for _, v := range variants {
-		if wantHeight > 0 && v.Height != wantHeight {
+		if wantHeight > 0 && v.qualityHeight() != wantHeight {
 			continue
 		}
 		if wantCodec == "h264" && !v.IsH264() {
@@ -171,6 +184,17 @@ func selectExplicit(variants []Variant, pref string) (Variant, error) {
 	if len(candidates) == 0 {
 		// No exact match — find closest height.
 		return closestToHeight(variants, wantHeight), nil
+	}
+	if wantCodec == "" {
+		var h264 []Variant
+		for _, v := range candidates {
+			if v.IsH264() {
+				h264 = append(h264, v)
+			}
+		}
+		if len(h264) > 0 {
+			candidates = h264
+		}
 	}
 
 	// Among matches, pick the one with lowest bitrate (most efficient).
@@ -200,9 +224,9 @@ func closestToBitrate(variants []Variant, targetKbps int) Variant {
 // closestToHeight returns the variant closest to the target height.
 func closestToHeight(variants []Variant, targetHeight int) Variant {
 	best := variants[0]
-	bestDiff := abs(best.Height - targetHeight)
+	bestDiff := abs(best.qualityHeight() - targetHeight)
 	for _, v := range variants[1:] {
-		diff := abs(v.Height - targetHeight)
+		diff := abs(v.qualityHeight() - targetHeight)
 		if diff < bestDiff || (diff == bestDiff && v.Bandwidth > best.Bandwidth) {
 			best = v
 			bestDiff = diff
