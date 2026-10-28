@@ -198,12 +198,14 @@ type SubtitleDownloader interface {
 
 // HLSDownloadResult contains info about a completed HLS download.
 type HLSDownloadResult struct {
-	PreserveExisting   bool   // input 0 is a completed container; retain its audio, subtitles and attachments
-	ExistingAudioCount int    // populated by the muxer from ffprobe
-	Resolution         string // e.g. "1920x1080"
-	BitrateKbps        int    // selected variant bitrate
-	Codec              string // "h264" or "h265"
-	TotalBytes         int64
+	PreserveExisting        bool       // input 0 is a completed container; retain its audio, subtitles and attachments
+	ExistingAudioCount      int        // populated by the muxer from ffprobe
+	ExistingAttachmentCount int        // non-picture attachments already mapped from input 0
+	ExistingCovers          []HLSCover // Matroska pictures extracted by the muxer before replacing input 0
+	Resolution              string     // e.g. "1920x1080"
+	BitrateKbps             int        // selected variant bitrate
+	Codec                   string     // "h264" or "h265"
+	TotalBytes              int64
 
 	// VideoPath is the local path to the concatenated video .ts file.
 	VideoPath string
@@ -222,6 +224,13 @@ type HLSDownloadResult struct {
 	// TempDir is the directory holding the intermediate files; the caller
 	// should remove it after remuxing.
 	TempDir string
+}
+
+// HLSCover is an existing embedded picture, copied without re-encoding.
+type HLSCover struct {
+	Path     string
+	Filename string
+	MIMEType string
 }
 
 // HLSAudioTrack describes a downloaded audio rendition.
