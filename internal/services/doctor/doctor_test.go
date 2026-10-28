@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,7 +144,7 @@ func TestCheckEntry_HealthyAbsolutePath(t *testing.T) {
 func TestCheckEntry_HealthyZeroRecordedBytes(t *testing.T) {
 	// rec.Bytes == 0 with a path present: file exists, no size guards apply.
 	dir := t.TempDir()
-	mkfile(t, dir, "ep1.mkv", 0)
+	mkfile(t, dir, "ep1.mkv", 50)
 	rec := domain.CompletedRec{Path: "ep1.mkv", Bytes: 0}
 	if issue := checkEntry("S1E1", rec, dir); issue != nil {
 		t.Fatalf("expected healthy when recorded bytes 0 and file present, got %+v", issue)
@@ -707,5 +708,97 @@ func TestCopyFile_MissingSource(t *testing.T) {
 	err := copyFile(filepath.Join(dir, "nope"), filepath.Join(dir, "dst"))
 	if err == nil {
 		t.Fatal("expected error copying missing source")
+	}
+}
+
+func TestRepairRetainsHealthyVersionsAndMetadata(t *testing.T) {
+	for _, brokenPrimary := range []bool{true, false} {
+		t.Run(fmt.Sprintf("brokenPrimary=%t", brokenPrimary), func(t *testing.T) {
+			dir := t.TempDir()
+			good := domain.CompletedRec{Path: "good.mkv", Bytes: 10, Audio: []string{"Studio A"}, RequestedQuality: "720p"}
+			bad := domain.CompletedRec{Path: "gone.mkv", Bytes: 20, RequestedQuality: "1080p"}
+			mkfile(t, dir, good.Path, 10)
+			primary, secondary := good, bad
+			if brokenPrimary {
+				primary, secondary = bad, good
+			}
+			primary.Versions = []domain.CompletedRec{secondary}
+			writeStateFile(t, dir, domain.DownloadState{Completed: map[string]domain.CompletedRec{"S1E1": primary}})
+			report, err := Run(context.Background(), testDeps(), Options{OutputDir: dir, Fix: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Issues) != 1 {
+				t.Fatalf("issues=%+v", report.Issues)
+			}
+			saved := readState(t, dir).Completed["S1E1"]
+			if saved.Path != "good.mkv" || len(saved.Versions) != 0 || len(saved.Audio) != 1 || saved.RequestedQuality != "720p" {
+				t.Fatalf("healthy version lost: %+v", saved)
+			}
+		})
+	}
+}
+
+func TestRepairNeverDeletesOutsideTheCheckedFolder(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		t.Run(fmt.Sprintf("symlink=%t", symlink), func(t *testing.T) {
+			dir, outside := t.TempDir(), t.TempDir()
+			protected := mkfile(t, outside, "private.mkv", 1)
+			path := protected
+			if symlink {
+				if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
+					t.Skip(err)
+				}
+				path = filepath.Join(dir, "link", "private.mkv")
+			}
+			writeStateFile(t, dir, domain.DownloadState{Completed: map[string]domain.CompletedRec{"S1E1": {Path: path, Bytes: 100}}})
+			if _, err := Run(context.Background(), testDeps(), Options{OutputDir: dir, Fix: true}); err == nil {
+				t.Fatal("repair outside root unexpectedly allowed")
+			}
+			if _, err := os.Stat(protected); err != nil {
+				t.Fatal("unrelated file was deleted")
+			}
+			if len(readState(t, dir).Completed) != 1 {
+				t.Fatal("failed repair rewrote state")
+			}
+		})
+	}
+}
+
+func TestCleanTmpWorksWithoutStateRepair(t *testing.T) {
+	dir := t.TempDir()
+	tmp := mkfile(t, dir, "orphan.tmp", 20)
+	writeStateFile(t, dir, domain.DownloadState{Completed: map[string]domain.CompletedRec{"S1E1": {Path: "missing.mkv", Bytes: 100}}})
+	if _, err := Run(context.Background(), testDeps(), Options{OutputDir: dir, CleanTmp: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatal("cleanup-only request left orphan data")
+	}
+	if len(readState(t, dir).Completed) != 1 {
+		t.Fatal("cleanup-only request modified state")
+	}
+}
+
+func TestRepairWriteFailureIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "state-is-a-directory")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := domain.DownloadState{Completed: map[string]domain.CompletedRec{"S1E1": {Path: "gone.mkv", Bytes: 20}}}
+	report := &Report{Issues: []Issue{{Key: "S1E1", Kind: IssueMissing}}}
+	if _, err := applyFixes(target, &state, report, Options{OutputDir: dir, Fix: true}, nopLogger{}); err == nil {
+		t.Fatal("failed state write reported success")
+	}
+}
+
+func TestEmptyAndDirectoryPathsAreNotHealthy(t *testing.T) {
+	dir := t.TempDir()
+	empty := mkfile(t, dir, "empty.mkv", 0)
+	for _, path := range []string{empty, dir} {
+		if issue := checkEntry("S1E1", domain.CompletedRec{Path: path}, dir); issue == nil {
+			t.Errorf("invalid media considered healthy: %s", path)
+		}
 	}
 }

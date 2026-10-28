@@ -26,11 +26,18 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
+      - name: Install Linux tray and media dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev ffmpeg
+
       - name: Build web UI
         run: |
           cd web
           npm ci
           npm run build
+
+      - name: Test web UI
+        run: npm test --prefix web
 
       - name: go vet
         run: go vet ./...
@@ -61,5 +68,13 @@ jobs:
           cd web
           npm ci
           npm run build
+      - name: Web coverage
+        run: npm run coverage --prefix web
+      - name: Install Linux tray and media dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev ffmpeg
       - name: Test (race)
         run: go test -race ./... -count=1
+      - name: Audit frontend dependencies
+        run: npm audit --prefix web --audit-level=high
+      - name: Audit reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

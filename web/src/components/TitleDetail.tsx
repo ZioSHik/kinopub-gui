@@ -38,7 +38,7 @@ import {
 } from "../lib/audio";
 import { voiceoverLabels } from "../lib/libraryAudio";
 import { existingDownloads, matchesDownload, preferredRecordedAudio } from "../lib/downloaded";
-import { initialEpisodeSelection, isQueued, nothingLeftToQueue, queueCoverage } from "../lib/queue";
+import { completedSignal, initialEpisodeSelection, isQueued, itemIdFromURL, nothingLeftToQueue, queueCoverage } from "../lib/queue";
 import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
 import { Player } from "./Player";
@@ -107,6 +107,8 @@ export function TitleDetail({
   // Whether the on-disk scan has answered. The episode selection waits for it:
   // seeding before it lands would tick episodes that are already downloaded.
   const [downloadedReady, setDownloadedReady] = useState(false);
+  const completedCount = completedSignal(jobs.filter((job) => itemIdFromURL(job.url) === id));
+  const observedCompletions = useRef(completedCount);
   // Selected episode keys (serials). null until detail loads.
   const [epSel, setEpSel] = useState<Set<string> | null>(null);
   // Whether the episode and voiceover selections have been seeded for this
@@ -172,6 +174,20 @@ export function TitleDetail({
       alive = false;
     };
   }, [id, settings.outputPath]);
+
+  // A title can stay open while its queue runs. Refresh the inventory when an
+  // episode lands, otherwise the card keeps yesterday's quality/audio coverage.
+  useEffect(() => {
+    if (!downloadedReady) return;
+    const previous = observedCompletions.current;
+    observedCompletions.current = completedCount;
+    if (completedCount <= previous) return;
+    let alive = true;
+    api.libraryDownloaded(id, settings.outputPath)
+      .then((result) => { if (alive) setDownloadedFiles((result.episodes || []).filter((file) => file.exists)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [id, settings.outputPath, completedCount, downloadedReady]);
 
   // What the queue already holds for this title. Read straight off the live job
   // list, so it is true the moment a job is submitted and stays true for as long

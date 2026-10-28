@@ -183,7 +183,7 @@ const RU: Record<string, string> = {
   Movie: "Фильм",
   Serial: "Сериал",
   "On disk": "На диске",
-  "{n} downloading · {m} on disk": "{n} качается · {m} на диске",
+  "{n} in the queue · {m} on disk": "{n} в очереди · {m} на диске",
   "Show actions": "Показать действия",
   "Search by title or genre…": "Поиск по названию или жанру…",
   "Clear search": "Очистить поиск",
@@ -530,6 +530,8 @@ const RU: Record<string, string> = {
     "Часть временных файлов не удалось удалить — проверьте папку загрузок",
   "Couldn't scan your folders": "Не удалось просканировать папки",
   "Finished downloads": "Завершённые загрузки",
+  "Not enough disk space. Free space in the download folder, then retry.":
+    "Недостаточно места на диске. Освободите место в папке загрузки и повторите попытку.",
 };
 
 interface I18nValue {
@@ -541,7 +543,8 @@ interface I18nValue {
 const I18nCtx = createContext<I18nValue | null>(null);
 
 function detectLang(): Lang {
-  const saved = localStorage.getItem("kinopub.lang");
+  let saved: string | null = null;
+  try { saved = localStorage.getItem("kinopub.lang"); } catch { /* use browser language */ }
   if (saved === "ru" || saved === "en") return saved;
   return navigator.language?.toLowerCase().startsWith("ru") ? "ru" : "en";
 }
@@ -550,7 +553,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => detectLang());
 
   const setLang = (l: Lang) => {
-    localStorage.setItem("kinopub.lang", l);
+    try { localStorage.setItem("kinopub.lang", l); } catch { /* language still changes for this session */ }
     document.documentElement.lang = l;
     setLangState(l);
   };
@@ -592,6 +595,10 @@ export function looksLikeCanceled(msg?: string): boolean {
   if (!msg) return false;
   const m = msg.toLowerCase();
   return m === "canceled" || m === "cancelled" || m.includes("context canceled");
+}
+
+export function looksLikeDiskFull(msg?: string): boolean {
+  return /no space left on device|not enough space on the disk|disk (?:is )?full|\bENOSPC\b/i.test(msg || "");
 }
 
 // looksLikeTimeout reports whether an error message indicates a network timeout

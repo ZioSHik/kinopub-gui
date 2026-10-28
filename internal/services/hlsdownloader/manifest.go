@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -196,11 +197,23 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
+		if strings.HasPrefix(line, "#EXT-X-BYTERANGE:") {
+			return nil, fmt.Errorf("byte-range HLS downloads are not supported")
+		}
+		if strings.HasPrefix(line, "#EXT-X-KEY:") {
+			attrs := parseHLSAttributes(strings.TrimPrefix(line, "#EXT-X-KEY:"))
+			if !strings.EqualFold(attrs["METHOD"], "NONE") {
+				return nil, fmt.Errorf("encrypted HLS downloads are not supported")
+			}
+		}
 		if strings.HasPrefix(line, "#EXT-X-MAP:") {
 			// fMP4/CMAF initialization segment (ftyp+moov). Capture its URI so the
 			// downloader can fetch it and prepend it to the media fragments.
 			attrs := parseHLSAttributes(line[len("#EXT-X-MAP:"):])
 			if uri := attrs["URI"]; uri != "" {
+				if attrs["BYTERANGE"] != "" {
+					return nil, fmt.Errorf("byte-range HLS initialization is not supported")
+				}
 				result.InitURI = resolveURL(baseURL, uri)
 			}
 			continue
@@ -216,6 +229,9 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 			if perr != nil {
 				return nil, fmt.Errorf("invalid EXTINF duration %q: %w", durStr, perr)
 			}
+			if math.IsNaN(dur) || math.IsInf(dur, 0) || dur < 0 || dur > float64((1<<63-1)/int64(time.Second)) {
+				return nil, fmt.Errorf("invalid EXTINF duration %q", durStr)
+			}
 			pendingDuration = dur
 			sawExtinf = true
 		} else if !strings.HasPrefix(line, "#") && line != "" && sawExtinf {
@@ -226,6 +242,9 @@ func parseMediaPlaylist(r io.Reader, baseURL string) (*MediaPlaylist, error) {
 			}
 			result.Segments = append(result.Segments, seg)
 			result.TotalDuration += pendingDuration
+			if result.TotalDuration > float64((1<<63-1)/int64(time.Second)) {
+				return nil, fmt.Errorf("HLS duration exceeds supported range")
+			}
 			pendingDuration = 0
 			sawExtinf = false
 			index++
@@ -268,6 +287,7 @@ func parseHLSAttributes(s string) map[string]string {
 	s = strings.TrimSpace(s)
 
 	for len(s) > 0 {
+		s = strings.TrimLeft(s, " \t\r\n,")
 		eqIdx := strings.IndexByte(s, '=')
 		if eqIdx < 0 {
 			break

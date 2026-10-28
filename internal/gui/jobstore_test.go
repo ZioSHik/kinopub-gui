@@ -207,3 +207,40 @@ func TestRemovePersistsSynchronously(t *testing.T) {
 		t.Errorf("removed job still persisted: %v", got)
 	}
 }
+
+func TestPersistRetriesFailedWriteWithoutAnotherJobChange(t *testing.T) {
+	root := t.TempDir()
+	obstacle := filepath.Join(root, "blocked")
+	if err := os.WriteFile(obstacle, []byte("file blocks config directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := newJobManager(newHub())
+	m.store = &jobStore{path: filepath.Join(obstacle, "jobs.json")}
+	m.add(newJob("job-1", "https://kino.watch/item/view/42", domain.RunConfig{}))
+	m.markPersistDirty()
+	m.persistNow()
+	if m.persistedGen == m.persistGen.Load() {
+		t.Fatal("failed write was marked persisted")
+	}
+	if err := os.Remove(obstacle); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(obstacle, 0700); err != nil {
+		t.Fatal(err)
+	}
+	m.persistNow()
+	if jobs := m.store.load(); len(jobs) != 1 {
+		t.Fatalf("failed queue was not retried: %d jobs", len(jobs))
+	}
+}
+
+func TestPersistedPlanDoesNotShareLiveSeasonMap(t *testing.T) {
+	j := newJob("job-1", "42", domain.RunConfig{})
+	j.plan = &PlanView{Total: 2, Seasons: map[int]int{1: 2}}
+	saved := persistedFrom(j)
+	j.plan.Seasons[1] = 3
+	j.plan.Total = 3
+	if saved.Plan.Total != 2 || saved.Plan.Seasons[1] != 2 {
+		t.Fatal("persisted plan shares mutable live state")
+	}
+}

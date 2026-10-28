@@ -82,7 +82,7 @@ func WithPersist(fn func(Tokens)) Option {
 }
 
 // WithDebug registers a logger that receives a one-line summary of every OAuth
-// response (status + truncated body), for diagnosing the device-login flow.
+// response (status and size), for diagnosing the device-login flow.
 func WithDebug(fn func(string)) Option {
 	return func(c *Client) { c.debug = fn }
 }
@@ -283,7 +283,7 @@ func (c *Client) oauth(ctx context.Context, path string, vals url.Values, out an
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if c.debug != nil {
-		c.debug(fmt.Sprintf("POST %s?%s -> HTTP %d: %s", path, grantOf(vals), resp.StatusCode, snippet(body)))
+		c.debug(fmt.Sprintf("POST %s?%s -> HTTP %d (%d bytes)", path, grantOf(vals), resp.StatusCode, len(body)))
 	}
 	if jerr := json.Unmarshal(body, out); jerr != nil {
 		return resp.StatusCode, fmt.Errorf("kino.watch auth: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))

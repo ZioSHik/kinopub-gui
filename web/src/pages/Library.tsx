@@ -771,9 +771,9 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
   const [query, setQuery] = useState("");
   // Tiles are the default: this page is a media library first, and a poster wall
   // reads faster than a stack of rows.
-  const [view, setView] = useState<ViewMode>(() =>
-    localStorage.getItem(VIEW_KEY) === "list" ? "list" : "grid",
-  );
+  const [view, setView] = useState<ViewMode>(() => {
+    try { return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "grid"; } catch { return "grid"; }
+  });
   // The open card lives in the URL hash ("#/library/i/<id>") so it survives a
   // reload and browser back closes it.
   const cardId = useRoute().itemId ?? null;
@@ -814,7 +814,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
 
   const setViewMode = (v: ViewMode) => {
     setView(v);
-    localStorage.setItem(VIEW_KEY, v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* The selected view still applies to this session. */ }
   };
 
   const series = data?.series ?? [];
@@ -845,6 +845,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
     return !supersededByLibrary(j, series);
   });
   const dismissable = jobs.filter((j) => ["completed", "failed", "canceled"].includes(j.status)).length;
+  const queuedCount = liveJobs.filter((j) => j.status !== "failed" && j.status !== "canceled").length;
 
   const clearFinished = async () => {
     try {
@@ -905,8 +906,8 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
               ? scanError
                 ? t("Couldn't scan your folders")
                 : t("Scanning your folders…")
-              : liveJobs.length > 0
-                ? t("{n} downloading · {m} on disk", { n: liveJobs.length, m: series.length })
+              : queuedCount > 0
+                ? t("{n} in the queue · {m} on disk", { n: queuedCount, m: series.length })
                 : t("Downloads found in your output folders")}
           </p>
         </div>
@@ -930,7 +931,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
         <section className="space-y-3">
           <div className="flex items-center gap-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              {liveJobs.length > 0 ? t("Downloading") : t("Finished downloads")}
+              {queuedCount > 0 ? t("Downloading") : t("Finished downloads")}
             </h2>
             {liveJobs.length > 0 && (
               <span className="chip border-gold-500/25 bg-gold-500/10 text-gold-300">{liveJobs.length}</span>

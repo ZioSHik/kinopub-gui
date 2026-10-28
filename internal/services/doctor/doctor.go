@@ -37,17 +37,18 @@ type Issue struct {
 	StatePath   string // path recorded in state
 	StateBytes  int64  // bytes recorded in state
 	ActualBytes int64  // actual file size on disk (-1 if missing)
+	Version     int    // index inside CompletedRec.Files()
 }
 
 // IssueKind classifies the type of problem.
 type IssueKind int
 
 const (
-	IssueMissing          IssueKind = iota // file not found on disk
-	IssueTruncated                         // file smaller than recorded
-	IssueSizeMismatch                      // file size differs (larger)
-	IssueNoPath                            // state entry has no path
-	IssueOrphanTmp                         // orphan .tmp file
+	IssueMissing      IssueKind = iota // file not found on disk
+	IssueTruncated                     // file smaller than recorded
+	IssueSizeMismatch                  // file size differs (larger)
+	IssueNoPath                        // state entry has no path
+	IssueOrphanTmp                     // orphan .tmp file
 )
 
 // String returns a human-readable label for the issue kind.
@@ -104,6 +105,7 @@ const stateFileName = ".kinopub-state.json"
 // Run performs the doctor check and optionally repairs issues.
 func Run(ctx context.Context, deps Deps, opts Options) (*Report, error) {
 	log := deps.Logger.Component("doctor")
+	opts.OutputDir = fsutil.CanonicalPath(opts.OutputDir)
 
 	stateFilePath := filepath.Join(opts.OutputDir, stateFileName)
 
@@ -123,7 +125,7 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Report, error) {
 			domain.F("error", err.Error()),
 		)
 		if opts.Fix {
-			backupPath := stateFilePath + ".corrupt." + time.Now().Format("20060102-150405")
+			backupPath := stateFilePath + ".corrupt." + time.Now().Format("20060102-150405.000000000")
 			if copyErr := copyFile(stateFilePath, backupPath); copyErr == nil {
 				log.Info("backed up corrupt state file", domain.F("backup", backupPath))
 			}
@@ -161,12 +163,20 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Report, error) {
 
 	// 2. Check each completed entry against the filesystem (presence + size).
 	for key, rec := range state.Completed {
-		issue := checkEntry(key, rec, opts.OutputDir)
-		if issue != nil {
-			report.Issues = append(report.Issues, *issue)
-			continue
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		report.Healthy++
+		healthy := true
+		for version, file := range rec.Files() {
+			if issue := checkEntry(key, file, opts.OutputDir); issue != nil {
+				issue.Version = version
+				report.Issues = append(report.Issues, *issue)
+				healthy = false
+			}
+		}
+		if healthy {
+			report.Healthy++
+		}
 	}
 
 	// Sort issues by key for stable output.
@@ -186,8 +196,11 @@ func Run(ctx context.Context, deps Deps, opts Options) (*Report, error) {
 	}
 
 	// 4. Apply fixes if requested.
-	if opts.Fix && len(report.Issues) > 0 {
-		fixed := applyFixes(stateFilePath, &state, report, opts, log)
+	if (opts.Fix || opts.CleanTmp) && len(report.Issues) > 0 {
+		fixed, err := applyFixes(stateFilePath, &state, report, opts, log)
+		if err != nil {
+			return report, err
+		}
 		log.Info("fixes applied", domain.F("entries_removed", fixed))
 	}
 
@@ -236,7 +249,17 @@ func checkEntry(key string, rec domain.CompletedRec, outputDir string) *Issue {
 		return &base
 	}
 
+	if !info.Mode().IsRegular() {
+		base.Kind = IssueNoPath
+		base.Detail = "recorded path is not a regular media file"
+		return &base
+	}
 	actualSize := info.Size()
+	if actualSize == 0 {
+		base.Kind = IssueTruncated
+		base.Detail = "media file is empty"
+		return &base
+	}
 	base.ActualBytes = actualSize
 
 	if rec.Bytes > 0 && actualSize < rec.Bytes {
@@ -315,57 +338,89 @@ func findOrphanTmps(outputDir string) []string {
 }
 
 // applyFixes modifies the state file to remove broken entries.
-func applyFixes(stateFilePath string, state *domain.DownloadState, report *Report, opts Options, log domain.Logger) int {
-	removed := 0
-
+func applyFixes(stateFilePath string, state *domain.DownloadState, report *Report, opts Options, log domain.Logger) (int, error) {
+	bad := make(map[string]map[int]bool)
+	var brokenFiles, temporaryFiles []string
 	for _, issue := range report.Issues {
 		switch issue.Kind {
 		case IssueMissing, IssueTruncated, IssueNoPath:
-			if issue.Key != "" {
-				delete(state.Completed, issue.Key)
-				removed++
-				log.Info("removed state entry (will re-download)",
-					domain.F("key", issue.Key),
-					domain.F("reason", issue.Kind.String()),
-				)
+			if !opts.Fix || issue.Key == "" {
+				continue
 			}
-
-			// Delete broken files from disk.
+			if bad[issue.Key] == nil {
+				bad[issue.Key] = make(map[int]bool)
+			}
+			bad[issue.Key][issue.Version] = true
 			if issue.Kind == IssueTruncated && issue.StatePath != "" {
-				fullPath := issue.StatePath
-				if !filepath.IsAbs(fullPath) {
-					fullPath = filepath.Join(opts.OutputDir, fullPath)
+				path, err := repairPath(opts.OutputDir, issue.StatePath)
+				if err != nil {
+					return 0, err
 				}
-				if err := os.Remove(fullPath); err == nil {
-					log.Info("deleted broken file", domain.F("path", fullPath))
-				}
+				brokenFiles = append(brokenFiles, path)
 			}
-
 		case IssueOrphanTmp:
 			if opts.CleanTmp {
-				// Use RemoveAll for .hls-tmp directories; os.Remove for plain .tmp files.
-				var cleanErr error
-				if strings.HasSuffix(issue.Detail, ".hls-tmp") {
-					cleanErr = os.RemoveAll(issue.Detail)
-				} else {
-					cleanErr = os.Remove(issue.Detail)
+				path, err := repairPath(opts.OutputDir, issue.Detail)
+				if err != nil {
+					return 0, err
 				}
-				if cleanErr == nil {
-					log.Info("deleted orphan tmp", domain.F("path", issue.Detail))
-				}
+				temporaryFiles = append(temporaryFiles, path)
 			}
 		}
 	}
-
-	if removed > 0 {
-		if err := writeState(stateFilePath, *state); err != nil {
-			log.Error("failed to write repaired state", domain.F("error", err.Error()))
+	removed := 0
+	for key, versions := range bad {
+		rec, ok := state.Completed[key]
+		if !ok {
+			continue
+		}
+		var kept []domain.CompletedRec
+		for index, file := range rec.Files() {
+			if versions[index] {
+				removed++
+				continue
+			}
+			kept = append(kept, file)
+		}
+		if len(kept) == 0 {
+			delete(state.Completed, key)
 		} else {
-			log.Info("state file repaired", domain.F("entries_removed", removed))
+			primary := kept[0]
+			primary.Versions = kept[1:]
+			state.Completed[key] = primary
 		}
 	}
+	if removed > 0 {
+		if err := writeState(stateFilePath, *state); err != nil {
+			return 0, fmt.Errorf("write repaired state: %w", err)
+		}
+		log.Info("state file repaired", domain.F("records_removed", removed))
+	}
+	for _, path := range append(brokenFiles, temporaryFiles...) {
+		var err error
+		if strings.HasSuffix(path, ".hls-tmp") {
+			err = os.RemoveAll(path)
+		} else {
+			err = os.Remove(path)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return removed, fmt.Errorf("remove broken/temporary file %q: %w", path, err)
+		}
+	}
+	return removed, nil
+}
 
-	return removed
+// A state record must never grant cleanup permission outside this library root.
+func repairPath(root, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	root, path = fsutil.CanonicalPath(root), fsutil.CanonicalPath(path)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("refusing to repair a file outside the checked folder: %q", path)
+	}
+	return path, nil
 }
 
 // writeState serializes and atomically writes the state to disk.
@@ -374,7 +429,7 @@ func writeState(path string, state domain.DownloadState) error {
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	return fsutil.AtomicWrite(path, data, 0644)
+	return fsutil.AtomicWrite(path, data, 0600)
 }
 
 // copyFile copies src to dst for backup purposes.
@@ -383,5 +438,5 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	return fsutil.AtomicWrite(dst, data, 0600)
 }

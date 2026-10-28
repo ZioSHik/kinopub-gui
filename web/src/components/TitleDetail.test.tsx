@@ -118,3 +118,17 @@ it.each([false, true])("allows adding another voiceover or quality while the sam
   await act(async () => {fireEvent.click(button());});
   expect(mocks.start.mock.calls[1][0].quality).toBe("720p");
 });
+
+it("refreshes the inventory while the open title finishes downloading", async () => {
+  mocks.downloaded.mockResolvedValue({episodes: []});
+  const props = {id: "77890",onClose: vi.fn(),onPick: vi.fn()};
+  const rendered = render(<I18nProvider><TitleDetail {...props} /></I18nProvider>);
+  await act(async () => {});
+  expect(screen.queryByText("8 of 8 downloaded")).not.toBeInTheDocument();
+  mocks.downloaded.mockResolvedValue({episodes: Array.from({length: 8}, (_, i) => ({key: `S1E${i+1}`,season: 1,episode: i+1,
+    exists: true,path: `/downloads/${i}.mkv`,resolution: "1920x800",audio: ["Studio A"]}))});
+  mocks.jobs = [{id: "fresh",url: "https://kino.watch/item/view/77890",status: "completed",episodes: [],quality: "1080p",logs: [],createdAt: "",title: "Test",outputPath: "/downloads",dryRun: false}];
+  rendered.rerender(<I18nProvider><TitleDetail {...props} /></I18nProvider>);
+  await act(async () => {});
+  expect(screen.getByText("8 of 8 downloaded")).toBeInTheDocument();
+});

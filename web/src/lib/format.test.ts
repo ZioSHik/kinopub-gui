@@ -87,12 +87,11 @@ describe("eta", () => {
     expect(eta(3660)).toBe("1h 1m");
   });
 
-  // KNOWN QUIRK (flagged): the seconds remainder is rounded independently of the
-  // minute floor, so a value whose remainder rounds up to 60 renders "Xm 60s"
-  // instead of carrying into "(X+1)m 0s". Pinning current behavior, NOT asserting
-  // it is desirable. e.g. 119.7s -> m=floor(1.995)=1, s=round(59.7)=60.
-  it("[quirk] renders 60s instead of carrying into the next minute", () => {
-    expect(eta(119.7)).toBe("1m 60s");
+  it("carries rounded seconds into the next minute or hour", () => {
+    expect(eta(59.7)).toBe("1m 0s");
+    expect(eta(119.7)).toBe("2m 0s");
+    expect(eta(3599.7)).toBe("1h 0m");
+    expect(eta(Infinity)).toBe("—");
   });
 });
 

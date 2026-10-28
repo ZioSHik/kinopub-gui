@@ -581,6 +581,16 @@ async function req<T>(method: string, path: string, body?: unknown, opts: ReqOpt
   return data as T;
 }
 
+// Autosave requests must reach the server in edit order, including a final
+// flush while leaving Settings. A rejected write must not block later edits.
+let settingsWriteTail: Promise<unknown> = Promise.resolve();
+function saveSettingsInOrder(settings: Settings): Promise<Settings> {
+  const payload = { ...settings, libraryDirs: settings.libraryDirs ? [...settings.libraryDirs] : settings.libraryDirs };
+  const result = settingsWriteTail.then(() => req<Settings>("PUT", "/api/settings", payload));
+  settingsWriteTail = result.catch(() => undefined);
+  return result;
+}
+
 export const api = {
   state: () => req<Snapshot>("GET", "/api/state"),
   ffmpeg: () => req<FFmpegStatus>("GET", "/api/ffmpeg"),
@@ -595,7 +605,7 @@ export const api = {
       timeoutMs: 0,
     }),
   getSettings: () => req<Settings>("GET", "/api/settings"),
-  saveSettings: (s: Settings) => req<Settings>("PUT", "/api/settings", s),
+  saveSettings: saveSettingsInOrder,
   preview: (r: Partial<RunRequest>) => req<PreviewResponse>("POST", "/api/preview", r),
   jobs: () => req<JobView[]>("GET", "/api/jobs"),
   startJob: (r: Partial<StartRequest>) => req<JobView>("POST", "/api/jobs", r),

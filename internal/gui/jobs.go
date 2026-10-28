@@ -381,6 +381,7 @@ type JobManager struct {
 	store        *jobStore
 	persistGen   atomic.Int64
 	persistedGen int64
+	persistMu    sync.Mutex
 
 	// Global download scheduler. maxActive bounds how many jobs run at once
 	// (0 = unlimited); extra jobs wait in pending (FIFO, reorderable) and are
@@ -459,6 +460,8 @@ func (m *JobManager) persistLoop() {
 // persistNow writes the current queue to disk if it changed since the last
 // write. Safe for concurrent use; no-op without an attached store.
 func (m *JobManager) persistNow() {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
 	m.mu.Lock()
 	store := m.store
 	gen := m.persistGen.Load()
@@ -466,7 +469,6 @@ func (m *JobManager) persistNow() {
 		m.mu.Unlock()
 		return
 	}
-	m.persistedGen = gen
 	jobs := make([]*Job, 0, len(m.jobs))
 	for _, j := range m.jobs {
 		jobs = append(jobs, j)
@@ -483,7 +485,11 @@ func (m *JobManager) persistNow() {
 		out = append(out, p)
 	}
 	sort.Slice(out, func(a, b int) bool { return out[a].CreatedAt.Before(out[b].CreatedAt) })
-	_ = store.save(out) // best-effort: a failed write retries on the next change
+	if err := store.save(out); err == nil {
+		m.mu.Lock()
+		m.persistedGen = gen
+		m.mu.Unlock()
+	} // Leave the generation dirty on failure so the next tick retries.
 }
 
 // markPersistDirty schedules a queue write on the next persist tick.

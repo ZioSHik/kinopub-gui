@@ -25,10 +25,11 @@ const idT: TFunc = (k, v) => {
 };
 
 export function eta(seconds?: number, t: TFunc = idT): string {
-  if (!seconds || seconds <= 0) return "—";
-  if (seconds < 60) return t("{n}s", { n: Math.round(seconds) });
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "—";
+  const rounded = Math.round(seconds);
+  if (rounded < 60) return t("{n}s", { n: rounded });
+  const m = Math.floor(rounded / 60);
+  const s = rounded % 60;
   if (m < 60) return t("{m}m {s}s", { m, s });
   const h = Math.floor(m / 60);
   return t("{h}h {m}m", { h, m: m % 60 });

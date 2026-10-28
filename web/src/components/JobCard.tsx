@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { api, type EpisodeView, type JobView, type Leftovers } from "../api";
 import { useApp } from "../store";
-import { useI18n, looksLikeCanceled, looksLikeTimeout } from "../i18n";
+import { useI18n, looksLikeCanceled, looksLikeDiskFull, looksLikeTimeout } from "../i18n";
 import { bytes, eta, relTime, speed } from "../lib/format";
 import { hasOtherActiveJob } from "../lib/queue";
 import { PosterImage, ProgressBar } from "./ui";
@@ -265,6 +265,8 @@ function EpisodeMeta({
           // muted meta colour like "paused", never as red error text.
           looksLikeCanceled(ep.error) ? (
             <span className="text-slate-400">{t("Canceled")}</span>
+          ) : looksLikeDiskFull(ep.error) ? (
+            <span className="text-ember-400/80" title={ep.error}>{t("Not enough disk space. Free space in the download folder, then retry.")}</span>
           ) : (
             <span className="truncate text-ember-400/80" title={ep.error}>{ep.error}</span>
           )
@@ -320,7 +322,7 @@ export function JobCard({ job }: { job: JobView }) {
       : single.percent
     : totalEps > 0
       ? Math.min(100, ((doneEps + runningPartial) / totalEps) * 100)
-      : finished
+      : job.status === "completed"
         ? 100
         : 0;
   // The key only carries information when it isn't the implicit first episode —
@@ -332,7 +334,7 @@ export function JobCard({ job }: { job: JobView }) {
   // information, and otherwise let the status badge and the bar speak.
   const progressLabel = single
     ? singleKey
-    : job.summary
+    : job.summary && job.summary.total > 0
       ? t("{ok} ok · {failed} failed · {skipped} skipped", {
           ok: job.summary.succeeded,
           failed: job.summary.failed,
@@ -340,6 +342,8 @@ export function JobCard({ job }: { job: JobView }) {
         })
       : totalEps > 0
         ? t("{done}/{total} episodes", { done: doneEps, total: totalEps })
+        : finished
+          ? ""
         : job.status === "resolving"
           ? t("Resolving source…")
           : t("Preparing…");
@@ -368,6 +372,8 @@ export function JobCard({ job }: { job: JobView }) {
     ? job.status === "canceled"
       ? ""
       : t("Canceled")
+    : looksLikeDiskFull(rawError)
+      ? t("Not enough disk space. Free space in the download folder, then retry.")
     : timedOut
       ? t("Request timed out — kino.watch may be unreachable without a VPN. Enable a VPN or set a proxy, then retry.")
       : rawError;

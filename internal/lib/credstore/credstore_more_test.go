@@ -441,3 +441,31 @@ func TestClearNoFileNoError(t *testing.T) {
 		t.Fatalf("Clear with no file: %v", err)
 	}
 }
+
+func TestSaveReplacesCredentialsWithPrivatePermissions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := Save(Credentials{APIAccessToken: "fake-old"}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := credPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Credentials{APIAccessToken: "fake-new"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0 {
+		t.Fatalf("credential permissions=%v", info.Mode().Perm())
+	}
+	got, err := Load()
+	if err != nil || got.APIAccessToken != "fake-new" {
+		t.Fatal("atomic replacement did not round-trip")
+	}
+}

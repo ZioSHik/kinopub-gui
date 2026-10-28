@@ -96,6 +96,7 @@ func persistedFrom(j *Job) persistedJob {
 	for k, v := range j.titles {
 		titles[k] = v
 	}
+	view := j.snapshotLocked() // copies the plan and its mutable season map
 	return persistedJob{
 		ID:         j.id,
 		URL:        j.url,
@@ -109,7 +110,7 @@ func persistedFrom(j *Job) persistedJob {
 		StartedAt:  j.startedAt,
 		FinishedAt: j.finishedAt,
 		Error:      j.errMsg,
-		Plan:       j.plan,
+		Plan:       view.Plan,
 		Episodes:   eps,
 		Summary:    j.summary,
 		Titles:     titles,

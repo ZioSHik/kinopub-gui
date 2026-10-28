@@ -3,12 +3,15 @@ package httpx
 import (
 	"bufio"
 	"context"
+	"golang.org/x/net/http2"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHasPort(t *testing.T) {
@@ -241,8 +244,7 @@ func TestDialProxy_HTTPConnectWithAuth(t *testing.T) {
 		t.Fatalf("dialProxy CONNECT auth: %v", err)
 	}
 	defer conn.Close()
-	if !strings.Contains(captured, "Proxy-Authorization: Basic ") &&
-		!strings.Contains(captured, "Authorization: Basic ") {
+	if !strings.Contains(captured, "Proxy-Authorization: Basic ") || strings.Contains(captured, "\r\nAuthorization:") {
 		t.Errorf("expected basic auth header, got: %q", captured)
 	}
 }
@@ -292,5 +294,118 @@ func TestDialProxy_SOCKS5DialerConstruction(t *testing.T) {
 	// The error should come from the dial attempt, not "socks5 dialer:".
 	if strings.Contains(err.Error(), "socks5 dialer:") {
 		t.Errorf("unexpected dialer construction error: %v", err)
+	}
+}
+
+func TestBrowserTransportReusesExistingH2WithoutAnotherTLSHandshake(t *testing.T) {
+	client, server := net.Pipe()
+	go (&http2.Server{}).ServeConn(server, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("reused")) })})
+	cc, err := (&http2.Transport{}).NewClientConn(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	bt := &browserTransport{h2Clients: map[string]*http2.ClientConn{"cached.invalid": cc}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", "https://cached.invalid/segment", nil)
+	resp, err := bt.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("cached H2 attempted a fresh network handshake: %v", err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil || string(data) != "reused" {
+		t.Fatalf("response=%q err=%v", data, err)
+	}
+}
+
+func TestBrowserTransportReusesKnownHTTP1Pool(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "pooled")
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	pool := server.Client().Transport.(*http.Transport)
+	defer pool.CloseIdleConnections()
+	bt := &browserTransport{h1: pool, h1Hosts: map[string]bool{u.Host: true}}
+	for range 2 {
+		req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+		response, err := bt.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("known HTTP/1 host did not use its pool: %v", err)
+		}
+		data, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || string(data) != "pooled" || response.ProtoMajor != 1 {
+			t.Fatalf("response=%q protocol=%s error=%v", data, response.Proto, err)
+		}
+	}
+}
+
+func TestBrowserTransportPlainHTTPUsesConfiguredProxy(t *testing.T) {
+	seen := make(chan string, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen <- r.URL.Host; w.Write([]byte("proxied")) }))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+	client := NewBrowserClient(proxyURL)
+	resp, err := client.Get("http://target.invalid/segment.ts")
+	if err != nil {
+		t.Fatalf("HTTP request bypassed its proxy: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if host := <-seen; host != "target.invalid" {
+		t.Fatalf("proxy target=%q", host)
+	}
+}
+
+func TestConnectPreservesBufferedTunnelBytes(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\nSENTINEL"))
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+	bt := &browserTransport{proxyURL: proxyURL}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := bt.dialProxy(ctx, "origin.example:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	buf := make([]byte, 8)
+	if _, err := io.ReadFull(conn, buf); err != nil || string(buf) != "SENTINEL" {
+		t.Fatalf("tunnel bytes lost: %q %v", buf, err)
+	}
+}
+
+func TestConnectReadHonorsCancellation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	proxyURL, _ := url.Parse("http://" + listener.Addr().String())
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = (&browserTransport{proxyURL: proxyURL}).dialProxy(ctx, "origin.example:443")
+	conn := <-accepted
+	conn.Close()
+	if err == nil || time.Since(start) > time.Second {
+		t.Fatalf("CONNECT ignored cancellation: %v elapsed=%s", err, time.Since(start))
 	}
 }
