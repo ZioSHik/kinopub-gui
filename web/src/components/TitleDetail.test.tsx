@@ -1,20 +1,23 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { JobView } from "../api";
+import { audioSelectionSpecs } from "../lib/audio";
 import { I18nProvider } from "../i18n";
 import { TitleDetail } from "./TitleDetail";
 
-const mocks = vi.hoisted(() => ({detail: vi.fn(), downloaded: vi.fn(), start: vi.fn()}));
+const mocks = vi.hoisted(() => ({detail: vi.fn(), downloaded: vi.fn(), start: vi.fn(), jobs: [] as JobView[]}));
 vi.mock("../api", async (original) => ({
   ...(await original<typeof import("../api")>()),
   api: { startJob: mocks.start, discoverItem: mocks.detail, libraryDownloaded: mocks.downloaded, discoverSimilar: async () => ({items: []}) },
 }));
 vi.mock("../store", () => ({useApp: () => ({
   settings: {quality: "1080p", container: "mkv", outputPath: "/downloads"},
-  ffmpeg: {ffmpegFound: true}, jobs: [], toast: vi.fn(),
+  ffmpeg: {ffmpegFound: true}, jobs: mocks.jobs, toast: vi.fn(),
 })}));
 
 beforeEach(() => {
   localStorage.clear();
+  mocks.jobs = [];
   mocks.start.mockClear();
   mocks.detail.mockResolvedValue({id: "77890",title: "Severance",year: 2022,poster: "",isSerial: true,
     rating: 0,imdbRating: 0,kinopoiskRating: 0,episodeCount: 8,itemUrl: "https://kino.watch/item/view/77890",
@@ -86,4 +89,32 @@ it.each([false, true])("sends an original-only selection even when commentary is
   expect(request.audioSpecs[0].require).toEqual(["Оригинал"]);
   expect(request.audioSpecs[0].forbid).toContain("комментар");
   expect(request.audioSpecs[0].forbid).toContain("commentar");
+});
+
+
+it.each([false, true])("allows adding another voiceover or quality while the same title is queued (serial=%s)", async (serial) => {
+  const detail = await mocks.detail();
+  if (!serial) { detail.seasons = []; detail.isSerial = false; }
+  mocks.detail.mockResolvedValue(detail);
+  mocks.downloaded.mockResolvedValue({episodes: []});
+  localStorage.setItem("kp.download.audioPrefByItem", JSON.stringify([["77890", ["studio a|aac|"]]]));
+  mocks.jobs = [{id: "existing",url: detail.itemUrl,status: "running",title: detail.title,outputPath: "/downloads",
+    quality: "1080p",container: "mkv",dryRun: false,createdAt: "",episodes: [],logs: [],
+    audioSpecs: audioSelectionSpecs([detail.audios[0]])}];
+  render(<I18nProvider><TitleDetail id="77890" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  expect(screen.getByRole("button", {name: "In the queue — open"})).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", {name: "Studio A"}));
+  fireEvent.click(screen.getByRole("button", {name: "Studio B"}));
+  const button = () => screen.getByRole("button", {name: serial ? "Download (8)" : "Download"});
+  expect(button()).toBeEnabled();
+  await act(async () => {fireEvent.click(button());});
+  expect(mocks.start.mock.calls[0][0].audioSpecs[0].require).toContain("Studio B");
+  fireEvent.click(screen.getByRole("button", {name: "Studio B"}));
+  fireEvent.click(screen.getByRole("button", {name: "Studio A"}));
+  expect(screen.getByRole("button", {name: "In the queue — open"})).toBeInTheDocument();
+  fireEvent.change(screen.getByTitle("Quality"), {target: {value: "720p"}});
+  expect(button()).toBeEnabled();
+  await act(async () => {fireEvent.click(button());});
+  expect(mocks.start.mock.calls[1][0].quality).toBe("720p");
 });

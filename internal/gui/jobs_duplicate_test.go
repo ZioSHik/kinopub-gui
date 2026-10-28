@@ -20,14 +20,17 @@ func TestRunSignature_SameDownloadMatches(t *testing.T) {
 		EpisodeSel: domain.Selection{All: true},
 	}
 
-	t.Run("quality, container and audio do not split a download", func(t *testing.T) {
-		other := base
-		other.Quality = "480p"
-		other.Container = domain.ContainerMP4
-		other.ForceRedownload = true
-		other.AudioPref = domain.AudioPreference{Specs: []domain.AudioSpec{{Require: []string{"lostfilm"}}}}
-		if runSignature(base) != runSignature(other) {
-			t.Error("same source, folder and episodes must share a signature — both runs write the same files")
+	t.Run("another quality, container or voiceover is new work", func(t *testing.T) {
+		for _, change := range []func(*domain.RunConfig){
+			func(c *domain.RunConfig) { c.Quality = "480p" },
+			func(c *domain.RunConfig) { c.Container = domain.ContainerMP4 },
+			func(c *domain.RunConfig) { c.AudioPref.Specs = []domain.AudioSpec{{Require: []string{"lostfilm"}}} },
+		} {
+			other := base
+			change(&other)
+			if runSignature(base) == runSignature(other) {
+				t.Error("another rendition was treated as a duplicate")
+			}
 		}
 	})
 
@@ -193,5 +196,35 @@ func TestHandleCreateJob_RejectsDuplicate(t *testing.T) {
 	s.handleCreateJob(w2, httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(raw2)))
 	if w2.Code != http.StatusAccepted {
 		t.Fatalf("different destination: status = %d, want %d (%s)", w2.Code, http.StatusAccepted, w2.Body.String())
+	}
+}
+
+func TestHandleCreateJobAcceptsAnotherRenditionButRejectsSame(t *testing.T) {
+	s := newTestServer(t)
+	s.mgr.startFn = func(*Job) {} // exercise admission without external API/network
+	req := StartRequest{RunRequest: RunRequest{URL: "https://kino.watch/item/view/409", OutputPath: t.TempDir(), Quality: "1080p", DryRun: true,
+		AudioSpecs: []AudioSpecDTO{{Require: []string{"Studio A"}}}}}
+	send := func() int {
+		raw, _ := json.Marshal(req)
+		w := httptest.NewRecorder()
+		s.handleCreateJob(w, httptest.NewRequest("POST", "/api/jobs", bytes.NewReader(raw)))
+		return w.Code
+	}
+	if status := send(); status != http.StatusAccepted {
+		t.Fatalf("first job: %d", status)
+	}
+	if status := send(); status != http.StatusConflict {
+		t.Fatalf("duplicate: %d", status)
+	}
+	req.AudioSpecs[0].Require = []string{"Studio B"}
+	if status := send(); status != http.StatusAccepted {
+		t.Fatalf("new voiceover: %d", status)
+	}
+	req.Quality = "720p"
+	if status := send(); status != http.StatusAccepted {
+		t.Fatalf("new resolution: %d", status)
+	}
+	if got := len(s.mgr.list()); got != 3 {
+		t.Fatalf("jobs=%d, want three distinct requests", got)
 	}
 }

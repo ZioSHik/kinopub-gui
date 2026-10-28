@@ -3,8 +3,11 @@ package kinopubapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -143,4 +146,16 @@ func errorsIs(err, target error) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func TestTransportErrorsDoNotExposeOAuthQuery(t *testing.T) {
+	cause := context.DeadlineExceeded
+	err := &url.Error{Op: "Get", URL: "https://api.example/items?access_token=private-access&refresh_token=private-refresh", Err: cause}
+	safe := safeRequestError(err)
+	if strings.Contains(safe.Error(), "private-") || strings.Contains(safe.Error(), "access_token") {
+		t.Fatalf("secret in transport error: %s", safe)
+	}
+	if !errors.Is(safe, cause) {
+		t.Fatal("transport cause lost; cancellation/retry matching would break")
+	}
 }

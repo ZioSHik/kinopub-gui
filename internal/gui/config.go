@@ -186,8 +186,9 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 // AudioSpecDTO is one exact audio-track selection rule sent by the GUI picker:
 // keep a track that contains every Require token and none of the Forbid tokens.
 type AudioSpecDTO struct {
-	Require []string `json:"require"`
-	Forbid  []string `json:"forbid"`
+	Require []string            `json:"require"`
+	Forbid  []string            `json:"forbid"`
+	Source  *domain.AudioSource `json:"source,omitempty"`
 }
 
 // RunRequest is the JSON body the UI sends to start a download or run a preview.
@@ -251,10 +252,10 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	}
 	// An exact picker selection supersedes the substring filter.
 	for _, s := range req.AudioSpecs {
-		if len(s.Require) == 0 {
+		if len(s.Require) == 0 && s.Source == nil {
 			continue
 		}
-		audioPref.Specs = append(audioPref.Specs, domain.AudioSpec{Require: s.Require, Forbid: s.Forbid})
+		audioPref.Specs = append(audioPref.Specs, domain.AudioSpec{Require: s.Require, Forbid: s.Forbid, Source: s.Source})
 	}
 
 	ua := strings.TrimSpace(req.UserAgent)

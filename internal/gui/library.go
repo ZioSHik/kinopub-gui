@@ -533,7 +533,7 @@ func libraryFile(key string, rec domain.CompletedRec, dir string) LibraryEpisode
 }
 
 func recoverLibraryAudio(ctx context.Context, ep *LibraryEpisode) {
-	if ep.Exists && len(ep.Audio) == 0 {
-		ep.Audio = mediainfo.AudioNames(ctx, ep.Path)
+	if ep.Exists {
+		ep.Audio = mediainfo.EnrichAudioNames(ctx, ep.Path, ep.Audio)
 	}
 }

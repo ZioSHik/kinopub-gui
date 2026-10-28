@@ -59,11 +59,11 @@ func TestSchedulerLimitQueuesExtras(t *testing.T) {
 	}
 
 	// Finishing the running job dispatches the next in FIFO order.
-	m.jobFinished()
+	m.jobFinished(a)
 	if got := snapshotStarted(mu, started); len(got) != 2 || got[1] != b.id {
 		t.Fatalf("after A finished, B should start next; got %v", got)
 	}
-	m.jobFinished()
+	m.jobFinished(b)
 	if got := snapshotStarted(mu, started); len(got) != 3 || got[2] != c.id {
 		t.Fatalf("after B finished, C should start; got %v", got)
 	}
@@ -86,7 +86,7 @@ func TestSchedulerPrioritizeReordersQueue(t *testing.T) {
 		t.Fatal("prioritizeJob(a) should fail — A is running, not queued")
 	}
 
-	m.jobFinished() // A done → C should jump ahead of B
+	m.jobFinished(a) // A done → C should jump ahead of B
 	if got := snapshotStarted(mu, started); got[len(got)-1] != c.id {
 		t.Fatalf("prioritized C should start before B; order = %v", got)
 	}
@@ -117,7 +117,7 @@ func TestSchedulerCancelQueuedJob(t *testing.T) {
 	}
 
 	// Finishing A must NOT resurrect the canceled B (running stays balanced).
-	m.jobFinished()
+	m.jobFinished(a)
 	m.mu.RLock()
 	running := m.running
 	m.mu.RUnlock()
@@ -135,7 +135,7 @@ func TestSchedulerFrontJumpsQueue(t *testing.T) {
 	m.submit(b, false)    // queued
 	m.submit(retry, true) // queued at the FRONT (mimics a per-episode retry)
 
-	m.jobFinished() // A done → the front-inserted retry runs before B
+	m.jobFinished(a) // A done → the front-inserted retry runs before B
 	if got := snapshotStarted(mu, started); got[len(got)-1] != retry.id {
 		t.Fatalf("front-submitted job should run before B; order = %v", got)
 	}
@@ -228,7 +228,7 @@ func TestSchedulerPauseResumeQueuedJob(t *testing.T) {
 	}
 
 	// Finishing A must NOT start the paused B.
-	m.jobFinished()
+	m.jobFinished(a)
 	if got := snapshotStarted(mu, started); len(got) != 1 {
 		t.Fatalf("paused job must not be dispatched; started=%v", got)
 	}
@@ -421,5 +421,26 @@ func TestAdmissionResetForgetsTheWindow(t *testing.T) {
 	g.reset() // e.g. the CDN started throttling, or nothing is running
 	if got := g.slots(); got != maxActiveDownloads {
 		t.Errorf("slots = %d after a reset, want %d", got, maxActiveDownloads)
+	}
+}
+
+func TestSchedulerSerializesRenditionsWithoutBlockingOtherTitles(t *testing.T) {
+	m, started, mu := newTestManager()
+	m.setMaxActive(0)
+	a, b, other := newTestJob(m), newTestJob(m), newTestJob(m)
+	a.cfg.Quality = "1080p"
+	b.cfg.Quality = "720p"
+	other.cfg.InputURL = "other-title"
+	m.submit(a, false)
+	m.submit(b, false)
+	m.submit(other, false)
+	got := snapshotStarted(mu, started)
+	if len(got) != 2 || got[0] != a.id || got[1] != other.id {
+		t.Fatalf("variant must wait while another title starts: %v", got)
+	}
+	m.jobFinished(a)
+	got = snapshotStarted(mu, started)
+	if len(got) != 3 || got[2] != b.id {
+		t.Fatalf("new rendition did not start after original finished: %v", got)
 	}
 }

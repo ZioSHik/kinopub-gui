@@ -232,8 +232,8 @@ func resolveCompletedPaths(state *domain.DownloadState, dir string) {
 					files[i].Path = absolute
 				}
 			}
-			if len(files[i].Audio) == 0 && files[i].Path != "" {
-				files[i].Audio = mediainfo.AudioNames(ctx, files[i].Path)
+			if files[i].Path != "" {
+				files[i].Audio = mediainfo.EnrichAudioNames(ctx, files[i].Path, files[i].Audio)
 			}
 		}
 		rec = files[0]

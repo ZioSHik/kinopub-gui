@@ -269,6 +269,7 @@ type PageEpisode struct {
 	Season       int
 	Episode      int
 	Subtitles    []SubtitleSource
+	AudioSources []AudioSource
 }
 
 // PageSeason is season metadata from the page.

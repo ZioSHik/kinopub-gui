@@ -20,6 +20,7 @@ type AudioTrackInfo struct {
 	// Language is the raw language tag from the source, e.g. "rus", "jpn".
 	// It may be empty when the source only encodes the language in Name.
 	Language string
+	Source   *AudioSource
 }
 
 // AudioPreference describes which audio tracks to keep for a download run.
@@ -56,6 +57,8 @@ type AudioPreference struct {
 	// Forbid:["ac3"]) vs. its 5.1 sibling (Require:["tvshows","ac3"]) — which the
 	// substring Include/Exclude filter cannot express. Set by the GUI picker.
 	Specs []AudioSpec
+	// Catalog metadata is episode-specific: track ordinals can move between episodes.
+	EpisodeSources map[EpisodeKey][]AudioSource `json:"-"`
 }
 
 // AudioSpec is one exact-match rule for an audio track: keep the track iff it
@@ -64,10 +67,17 @@ type AudioPreference struct {
 type AudioSpec struct {
 	Require []string
 	Forbid  []string
+	Source  *AudioSource `json:",omitempty"`
 }
 
 // matches reports whether track t satisfies this spec.
 func (s AudioSpec) matches(t AudioTrackInfo) bool {
+	if s.Source != nil {
+		if t.Source != nil {
+			return s.Source.sameRendition(*t.Source)
+		}
+		return s.Source.matchesRecorded(t.Name)
+	}
 	// The source labels commentary as "Original. Commentary". It is a separate
 	// kind of audio, not an extra match for an ordinary original/studio spec.
 	if IsCommentaryAudio(t.Name) && !requestsCommentary(s.Require) {
@@ -232,6 +242,31 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	// absent this episode), fall back to the single best track by Prefer rank so
 	// the output always carries audio.
 	if len(pref.Specs) > 0 {
+		if pref.IsExactSourceSelection() {
+			selected := make(map[int]bool)
+			for _, spec := range pref.Specs {
+				found := false
+				for i, track := range tracks {
+					if spec.matches(track) {
+						found = true
+						selected[i] = true
+						if spec.Source != nil {
+							break
+						} // one picker entry means one rendition
+					}
+				}
+				if !found {
+					return nil, true
+				}
+			}
+			indices := make([]int, 0, len(selected))
+			for i := range tracks {
+				if selected[i] {
+					indices = append(indices, i)
+				}
+			}
+			return indices, false
+		}
 		matched := make([]int, 0, len(tracks))
 		for i, t := range tracks {
 			for _, s := range pref.Specs {
@@ -570,9 +605,15 @@ var audioDuplicateOrdinal = regexp.MustCompile(`\s+\(\d+\)$`)
 // while preserving the studio, language and codec in a track's identity.
 func SameAudioRendition(a, b string) bool {
 	canonical := func(name string) string {
+		details := ""
+		if match := sourceDetails.FindStringSubmatch(name); len(match) > 0 {
+			details = " [" + strings.ReplaceAll(strings.ToLower(match[1]), "-", "") + " " + match[2] + "ch]"
+			name = sourceDetails.ReplaceAllString(name, "")
+			name = legacyCodecSuffix.ReplaceAllString(name, "$1")
+		}
 		name = audioTrackOrdinal.ReplaceAllString(strings.TrimSpace(name), "")
 		name = audioDuplicateOrdinal.ReplaceAllString(name, "")
-		return strings.ToLower(name)
+		return strings.ToLower(name) + details
 	}
 	return canonical(a) == canonical(b)
 }

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -117,19 +118,23 @@ type AudioRequestView struct {
 
 // JobView is the full serializable snapshot of a job sent to the UI.
 type JobView struct {
-	ID         string        `json:"id"`
-	URL        string        `json:"url"`
-	Status     string        `json:"status"`
-	Title      string        `json:"title"`
-	PosterURL  string        `json:"posterUrl,omitempty"`
-	OutputPath string        `json:"outputPath"`
-	DryRun     bool          `json:"dryRun"`
-	Quality    string        `json:"quality"`
-	CreatedAt  time.Time     `json:"createdAt"`
-	StartedAt  *time.Time    `json:"startedAt,omitempty"`
-	FinishedAt *time.Time    `json:"finishedAt,omitempty"`
-	Plan       *PlanView     `json:"plan,omitempty"`
-	Episodes   []EpisodeView `json:"episodes"`
+	ID           string         `json:"id"`
+	URL          string         `json:"url"`
+	Status       string         `json:"status"`
+	Title        string         `json:"title"`
+	PosterURL    string         `json:"posterUrl,omitempty"`
+	OutputPath   string         `json:"outputPath"`
+	DryRun       bool           `json:"dryRun"`
+	Quality      string         `json:"quality"`
+	Container    string         `json:"container"`
+	AudioSpecs   []AudioSpecDTO `json:"audioSpecs,omitempty"`
+	AudioInclude []string       `json:"audioInclude,omitempty"`
+	AudioExclude []string       `json:"audioExclude,omitempty"`
+	CreatedAt    time.Time      `json:"createdAt"`
+	StartedAt    *time.Time     `json:"startedAt,omitempty"`
+	FinishedAt   *time.Time     `json:"finishedAt,omitempty"`
+	Plan         *PlanView      `json:"plan,omitempty"`
+	Episodes     []EpisodeView  `json:"episodes"`
 	// SelectedEpisodes is the run's explicit episode selection ("S1E2" keys),
 	// exposed so the browser half of the duplicate rule (web/src/lib/queue.ts)
 	// can reason about a job that has not resolved its plan yet the same way the
@@ -319,6 +324,10 @@ func (j *Job) snapshotLocked() JobView {
 		OutputPath:       j.outputPath,
 		DryRun:           j.dryRun,
 		Quality:          j.quality,
+		Container:        containerName(j.cfg.Container),
+		AudioSpecs:       audioSpecDTOs(j.cfg.AudioPref.Specs),
+		AudioInclude:     append([]string(nil), j.cfg.AudioPref.Include...),
+		AudioExclude:     append([]string(nil), j.cfg.AudioPref.Exclude...),
 		CreatedAt:        j.createdAt,
 		StartedAt:        j.startedAt,
 		FinishedAt:       j.finishedAt,
@@ -382,6 +391,7 @@ type JobManager struct {
 	running   int
 	pending   []*Job
 	startFn   func(*Job)
+	inFlight  map[*Job]scheduledDownload
 
 	// limiter is the ONE segment-throughput controller every download in this
 	// process fetches through. Sharing it is what makes the job and episode
@@ -616,8 +626,22 @@ func (m *JobManager) submit(j *Job, front bool) {
 func (m *JobManager) dispatch() {
 	m.mu.Lock()
 	var toStart []*Job
-	for len(m.pending) > 0 {
-		j := m.pending[0]
+	for i := 0; i < len(m.pending); {
+		j := m.pending[i]
+		j.mu.Lock()
+		claim := scheduledDownload{target: downloadTarget(j.cfg.InputURL) + "|" + canonicalOutput(j.cfg.OutputPath), variant: renditionKey(j.cfg)}
+		j.mu.Unlock()
+		blocked := false
+		for _, active := range m.inFlight {
+			if active.target == claim.target && active.variant != claim.variant {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			i++ // another title can use the free slot while this variant waits
+			continue
+		}
 		hasSlot := m.maxActive <= 0 || m.running < m.maxActive
 		// Start when within the limit, or when the head job is urgent (a
 		// per-episode retry) — urgent jobs accept transient over-subscription,
@@ -626,7 +650,11 @@ func (m *JobManager) dispatch() {
 		if !hasSlot && !j.urgent {
 			break
 		}
-		m.pending = m.pending[1:]
+		m.pending = append(m.pending[:i], m.pending[i+1:]...)
+		if m.inFlight == nil {
+			m.inFlight = make(map[*Job]scheduledDownload)
+		}
+		m.inFlight[j] = claim
 		m.running++
 		toStart = append(toStart, j)
 	}
@@ -642,8 +670,9 @@ func (m *JobManager) dispatch() {
 
 // jobFinished is called once when a running job's goroutine exits; it frees the
 // job's slot and dispatches the next waiting job.
-func (m *JobManager) jobFinished() {
+func (m *JobManager) jobFinished(j *Job) {
 	m.mu.Lock()
+	delete(m.inFlight, j)
 	if m.running > 0 {
 		m.running--
 	}
@@ -778,18 +807,70 @@ func (m *JobManager) outputPaths() []string {
 	return paths
 }
 
-// runSignature identifies a download by the parameters that decide WHAT is
-// fetched and WHERE it lands: the source URL, the destination folder and the
-// episode selection. Two runs sharing a signature write the same files, the same
-// partial segments and the same state file, so the second one is a duplicate
-// rather than a new download.
-//
-// Quality, container, audio tracks and the force flag are deliberately NOT part
-// of it. They change how an episode is fetched, not which file it overwrites, so
-// treating "same series, same folder, different quality" as a distinct job would
-// license exactly the collision this guard exists to prevent. DryRun is part of
-// it: a dry run writes nothing and must not block (or be blocked by) a real
-// download of the same title.
+type scheduledDownload struct{ target, variant string }
+
+func containerName(container domain.Container) string {
+	if container == domain.ContainerMP4 {
+		return "mp4"
+	}
+	return "mkv"
+}
+
+func cloneAudioSource(source *domain.AudioSource) *domain.AudioSource {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
+}
+
+func audioSpecDTOs(specs []domain.AudioSpec) []AudioSpecDTO {
+	out := make([]AudioSpecDTO, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, AudioSpecDTO{Require: append([]string(nil), spec.Require...), Forbid: append([]string(nil), spec.Forbid...), Source: cloneAudioSource(spec.Source)})
+	}
+	return out
+}
+
+func normalizedTokens(tokens []string) []string {
+	out := make([]string, 0, len(tokens))
+	seen := make(map[string]bool)
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token != "" && !seen[token] {
+			out = append(out, token)
+			seen[token] = true
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// A different voiceover adds audio to an existing file, and a different video
+// tier produces a separate version. Both are real work, even for the same episode.
+func renditionKey(cfg domain.RunConfig) string {
+	q := strings.ToLower(strings.TrimSpace(string(cfg.Quality)))
+	if q == "" {
+		q = "optimal"
+	}
+	specs := make([]string, 0, len(cfg.AudioPref.Specs))
+	for _, spec := range cfg.AudioPref.Specs {
+		copy := spec
+		copy.Require, copy.Forbid = normalizedTokens(spec.Require), normalizedTokens(spec.Forbid)
+		data, _ := json.Marshal(copy)
+		specs = append(specs, string(data))
+	}
+	sort.Strings(specs)
+	include, exclude := normalizedTokens(cfg.AudioPref.Include), normalizedTokens(cfg.AudioPref.Exclude)
+	if len(specs) > 0 {
+		include, exclude = []string{}, []string{}
+	}
+	data, _ := json.Marshal([]any{q, containerName(cfg.Container), specs, include, exclude, cfg.AudioMenu})
+	return string(data)
+}
+
+// Only the same requested rendition and episode scope is a duplicate. The
+// scheduler serializes different renditions of one title to protect shared files.
 func runSignature(cfg domain.RunConfig) string {
 	out := canonicalOutput(cfg.OutputPath)
 	return strings.Join([]string{
@@ -797,6 +878,7 @@ func runSignature(cfg domain.RunConfig) string {
 		out,
 		fmt.Sprintf("dry=%t", cfg.DryRun),
 		episodeSelectionKey(cfg),
+		renditionKey(cfg),
 	}, "|")
 }
 
@@ -905,8 +987,7 @@ func (m *JobManager) findActiveDuplicate(cfg domain.RunConfig) (JobView, bool) {
 }
 
 // queueCoverage reports what active jobs already claim for the same download
-// target as cfg — same source URL, same output folder, hence the same files and
-// the same state file. It returns the episode keys those jobs will still
+// target and rendition as cfg — source, folder, quality, container and audio. It returns the episode keys those jobs will still
 // produce, whether one of them owns the title as a whole, and the oldest of them
 // so the caller can point the user at the card that already exists.
 //
@@ -939,7 +1020,7 @@ func (m *JobManager) queueCoverage(cfg domain.RunConfig) (covered map[string]boo
 	for _, j := range jobs {
 		j.mu.Lock()
 		if !isActiveStatus(j.status) || j.cfg.DryRun ||
-			downloadTarget(j.cfg.InputURL) != wantURL || canonicalOutput(j.cfg.OutputPath) != want {
+			downloadTarget(j.cfg.InputURL) != wantURL || canonicalOutput(j.cfg.OutputPath) != want || renditionKey(j.cfg) != renditionKey(cfg) {
 			j.mu.Unlock()
 			continue
 		}
@@ -1017,7 +1098,7 @@ func (m *JobManager) dedupeQueue() int {
 		return jobs[a].createdAt.Before(jobs[b].createdAt)
 	})
 
-	type target struct{ url, out string }
+	type target struct{ url, out, variant string }
 	claimed := make(map[target]map[string]bool)
 	whole := make(map[target]bool)
 	var drop []*Job
@@ -1028,7 +1109,7 @@ func (m *JobManager) dedupeQueue() int {
 			j.mu.Unlock()
 			continue
 		}
-		t := target{downloadTarget(j.cfg.InputURL), canonicalOutput(j.cfg.OutputPath)}
+		t := target{downloadTarget(j.cfg.InputURL), canonicalOutput(j.cfg.OutputPath), renditionKey(j.cfg)}
 		mine, mineWhole := jobCoverageLocked(j)
 		seen, exists := claimed[t]
 		// The first card for a target keeps everything, and so does one that is
@@ -1262,7 +1343,7 @@ func (m *JobManager) run(parent context.Context, j *Job, cfg domain.RunConfig, t
 	// Free this job's scheduler slot and dispatch the next queued job when the
 	// run exits, on every path (success, failure, panic, early return). Registered
 	// first so it runs last — after the recover below has finalized the status.
-	defer m.jobFinished()
+	defer m.jobFinished(j)
 	ctx, cancel := context.WithCancel(parent)
 	// A panic anywhere in the run path must fail just this job, not crash the
 	// whole server (and every other in-flight download).

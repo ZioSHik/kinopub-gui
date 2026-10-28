@@ -222,3 +222,14 @@ describe("original soundtrack and commentary", () => {
     expect(matchDownloadedAudio([original, commentary], ["18. Оригинал (ENG)"])).toEqual([original]);
   });
 });
+
+it("separates anonymous languages and AAC layouts in both preferences and recorded audio", () => {
+  const surround = audio({author: "",filter: "Многоголосый",label: "Многоголосый · AAC 5.1",lang: "ukr",codec: "aac",channels: 6,surround: true});
+  const stereo = {...surround, label: "Многоголосый",channels: 2,surround: false};
+  const russian = {...surround, lang: "rus"};
+  const studio = {...surround, author: "НЛО-TV",filter: "НЛО-TV"};
+  const all = [surround,stereo,russian,studio];
+  expect(matchRememberedAudio(all,[audioIdentity(stereo)])).toEqual([stereo]);
+  expect(matchDownloadedAudio(all,["15. Многоголосый (UKR) [AAC 6ch]"])).toEqual([surround]);
+  expect(matchDownloadedAudio(all,["16. Многоголосый (UKR) [AAC 2ch]"])).toEqual([stereo]);
+});

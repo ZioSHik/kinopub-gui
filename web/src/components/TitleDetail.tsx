@@ -177,11 +177,14 @@ export function TitleDetail({
   // list, so it is true the moment a job is submitted and stays true for as long
   // as that job has work left — no timers, no local "I just clicked it" flag that
   // could disagree with reality.
-  // Scoped to the folder this card would download into: a job filling a
-  // different folder is a different download by the server's own rule.
+  // Scoped to this folder and the selected rendition: another voiceover or
+  // quality can still be added while the original request is queued.
   const coverage = useMemo(
-    () => queueCoverage(jobs, id, settings.outputPath),
-    [jobs, id, settings.outputPath],
+    () => queueCoverage(jobs, id, settings.outputPath, {
+      quality, container: settings.container,
+      audioSpecs: audioSelectionSpecs((detail?.audios || []).filter((a) => audioSel.has(a.label))),
+    }),
+    [jobs, id, settings.outputPath, quality, settings.container, detail, audioSel],
   );
 
   // The same thing in this card's own key format, so it compares directly

@@ -219,6 +219,10 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// downloader for all episodes. This runs before progress rendering so the
 	// interactive prompt isn't clobbered by progress redraws.
 	pref := e.resolveAudioPreference(ctx, cfg, selected, manifestMap)
+	pref.EpisodeSources = make(map[domain.EpisodeKey][]domain.AudioSource)
+	for _, pe := range playlist.Episodes {
+		pref.EpisodeSources[domain.EpisodeKey{Series: series.ID, Season: pe.Season, Episode: pe.Episode}] = pe.AudioSources
+	}
 	e.deps.HLSDownloader.SetAudioPreference(pref)
 	cfg.AudioPref = pref
 

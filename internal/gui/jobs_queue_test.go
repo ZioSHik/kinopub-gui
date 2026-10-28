@@ -289,3 +289,30 @@ func TestQueueCoverage(t *testing.T) {
 		}
 	})
 }
+
+func TestQueueKeepsDifferentRenditions(t *testing.T) {
+	for _, change := range []func(*domain.RunConfig){
+		func(c *domain.RunConfig) { c.Quality = "720p" },
+		func(c *domain.RunConfig) { c.Container = domain.ContainerMP4 },
+		func(c *domain.RunConfig) { c.AudioPref.Specs = []domain.AudioSpec{{Require: []string{"Studio B"}}} },
+	} {
+		m := newJobManager(newHub())
+		old := queuedAt("old", "https://kino.watch/item/view/409", "/downloads", time.Hour, eps(1, 8)...)
+		old.cfg.Quality = "1080p"
+		old.cfg.AudioPref.Specs = []domain.AudioSpec{{Require: []string{"Studio A"}}}
+		next := queuedAt("next", old.url, "/downloads", time.Minute, eps(1, 8)...)
+		next.cfg = old.cfg
+		change(&next.cfg)
+		m.add(old)
+		if _, ok := m.findActiveDuplicate(next.cfg); ok {
+			t.Error("different rendition is a duplicate")
+		}
+		if _, _, _, ok := m.queueCoverage(next.cfg); ok {
+			t.Error("different rendition claims new selection")
+		}
+		m.add(next)
+		if n := m.dedupeQueue(); n != 0 {
+			t.Errorf("cleanup dropped %d new renditions", n)
+		}
+	}
+}

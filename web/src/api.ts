@@ -80,6 +80,10 @@ export interface JobView {
   outputPath: string;
   dryRun: boolean;
   quality: string;
+  container?: string;
+  audioSpecs?: AudioSpec[];
+  audioInclude?: string[];
+  audioExclude?: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -220,6 +224,7 @@ export interface DiscoverAudio {
 export interface AudioSpec {
   require: string[];
   forbid: string[];
+  source?: { language: string; type: string; author: string; codec: string; channels: number };
 }
 
 export interface DiscoverEpisode {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -54,13 +55,15 @@ func AudioNames(ctx context.Context, path string) []string {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, probe, "-v", "error", "-protocol_whitelist", "file,pipe",
-		"-select_streams", "a", "-show_entries", "stream=index:stream_tags=title,language", "-of", "json", absolute).Output()
+		"-select_streams", "a", "-show_entries", "stream=index,codec_name,channels:stream_tags=title,language", "-of", "json", absolute).Output()
 	if err != nil {
 		return nil
 	}
 	var result struct {
 		Streams []struct {
-			Tags struct {
+			Codec    string `json:"codec_name"`
+			Channels int    `json:"channels"`
+			Tags     struct {
 				Title    string `json:"title"`
 				Language string `json:"language"`
 			} `json:"tags"`
@@ -78,6 +81,10 @@ func AudioNames(ctx context.Context, path string) []string {
 				name += " (" + stream.Tags.Language + ")"
 			}
 		}
+		if stream.Codec != "" && stream.Channels > 0 {
+			name = audioDetails.ReplaceAllString(name, "")
+			name += fmt.Sprintf(" [%s %dch]", strings.ToUpper(stream.Codec), stream.Channels)
+		}
 		names = append(names, name)
 	}
 	audioCache.Lock()
@@ -87,6 +94,27 @@ func AudioNames(ctx context.Context, path string) []string {
 	audioCache.entries[key] = append([]string(nil), names...)
 	audioCache.Unlock()
 	return names
+}
+
+var audioDetails = regexp.MustCompile(`\s*\[[^\]]+ \d+ch\]$`)
+var genericTitle = regexp.MustCompile(`(?i)^(?:track|дорожка)\s+\d+(?:\s*\([^)]*\))?\s*\[[^\]]+ \d+ch\]$`)
+
+// MP4 can omit stream titles. Preserve recorded studio names in that case and
+// enrich only their codec/layout, using the persisted order when counts agree.
+func EnrichAudioNames(ctx context.Context, path string, known []string) []string {
+	actual := AudioNames(ctx, path)
+	if len(actual) == 0 {
+		return append([]string(nil), known...)
+	}
+	if len(actual) == len(known) {
+		for i, name := range actual {
+			if genericTitle.MatchString(name) && known[i] != "" {
+				details := audioDetails.FindString(name)
+				actual[i] = audioDetails.ReplaceAllString(known[i], "") + details
+			}
+		}
+	}
+	return actual
 }
 
 func isContainer(path string) bool {

@@ -275,6 +275,9 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 	// is matched against rendition names and languages; an empty preference
 	// keeps every track.
 	pref := d.audioPreference()
+	if pref.IsExactSourceSelection() && len(allRenditions) == 0 {
+		return nil, fmt.Errorf("cannot verify requested audio for %s: selected HLS variant exposes no audio renditions", epLabel)
+	}
 	audioRenditions := allRenditions
 	// Set when the requested voiceover is not among this episode's tracks and the
 	// selection fell back to a substitute. Recorded with the episode so the card
@@ -285,7 +288,11 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		for i, a := range allRenditions {
 			infos[i] = domain.AudioTrackInfo{Index: i, Name: a.Name, Language: a.Language}
 		}
+		domain.AttachAudioSources(infos, pref.EpisodeSources[key])
 		keep, fellBack := domain.SelectAudioResolved(infos, pref)
+		if fellBack && pref.IsExactSourceSelection() {
+			return nil, fmt.Errorf("requested audio rendition is unavailable for %s; refusing to substitute another track", epLabel)
+		}
 		if fellBack && pref.RequiresOriginal() {
 			return nil, fmt.Errorf("requested original soundtrack is unavailable for %s; refusing to substitute another voiceover", epLabel)
 		}
@@ -299,7 +306,11 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		filtered := make([]AudioRendition, 0, len(keep))
 		var keptLabels []string
 		for _, idx := range keep {
-			filtered = append(filtered, allRenditions[idx])
+			rendition := allRenditions[idx]
+			if infos[idx].Source != nil && pref.IsExactSourceSelection() {
+				rendition.Name = infos[idx].Source.RecordedName()
+			}
+			filtered = append(filtered, rendition)
 			keptLabels = append(keptLabels, allRenditions[idx].Name)
 		}
 		audioRenditions = filtered

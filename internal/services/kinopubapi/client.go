@@ -273,12 +273,12 @@ func (c *Client) oauth(ctx context.Context, path string, vals url.Values, out an
 	reqURL := c.host + path + "?" + vals.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
 	if err != nil {
-		return 0, err
+		return 0, safeRequestError(err)
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("kino.watch auth request: %w", err)
+		return 0, fmt.Errorf("kino.watch auth request: %w", safeRequestError(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -424,16 +424,26 @@ func (c *Client) fetch(ctx context.Context, reqURL string) (int, []byte, error) 
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, safeRequestError(err)
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, safeRequestError(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	return resp.StatusCode, body, nil
+}
+
+// net/http embeds the full request URL, including OAuth query parameters, in
+// transport errors. Keep the underlying cause for retries without exposing it.
+func safeRequestError(err error) error {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return fmt.Errorf("%s: %w", requestErr.Op, safeRequestError(requestErr.Err))
+	}
+	return err
 }
 
 func snippet(b []byte) string {

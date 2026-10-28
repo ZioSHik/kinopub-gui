@@ -1,6 +1,6 @@
 // Preserve studio names while removing source numbering and duplicate-track suffixes.
 export function voiceoverLabel(name: string): string {
-  let label = name.replace(/^\s*\d+\.\s*/, "").trim();
+  let label = name.replace(/\s*\[[^\]]+ \d+ch\]$/, "").replace(/^\s*\d+\.\s*/, "").trim();
   if (/^(track|дорожка)\s+\d+/i.test(label)) return label;
   label = label.replace(/\s+\(\d+\)$/, "").replace(/\s*\((rus|eng|jpn|ru|en|ja)\)\s*$/i, "");
   return label.replace(/^(Дубляж|Многоголосый|Двухголосый|Авторский|Одноголосый)\.\s*/i, "$1 · ").trim();

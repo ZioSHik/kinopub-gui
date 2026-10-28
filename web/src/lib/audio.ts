@@ -15,10 +15,10 @@ import type { AudioSpec, DiscoverAudio } from "../api";
 // the studio alone pre-selected both and would have downloaded two audio tracks
 // where one was asked for.
 export function audioIdentity(
-  a: Pick<DiscoverAudio, "filter" | "label" | "surround" | "codec">,
+  a: Pick<DiscoverAudio, "filter" | "label" | "surround" | "codec"> & Partial<Pick<DiscoverAudio, "lang" | "channels">>,
 ): string {
   const studio = (a.filter || a.label || "").trim().toLowerCase();
-  return [studio, (a.codec || "").trim().toLowerCase(), a.surround ? "5.1" : ""].join("|");
+  return [studio, (a.codec || "").trim().toLowerCase(), a.surround ? "5.1" : "", a.lang || "", a.channels || ""].join("|");
 }
 
 // Codecs that appear verbatim in an HLS track name. This is the only thing
@@ -51,7 +51,13 @@ export function matchRememberedAudio<T extends Pick<DiscoverAudio, "filter" | "l
 ): T[] {
   if (!prefs.length) return [];
   const want = new Set(prefs);
-  return audios.filter((a) => want.has(audioIdentity(a)) || want.has(legacyAudioKey(a.label)));
+  const exact = audios.filter((a) => want.has(audioIdentity(a)));
+  for (const pref of prefs) {
+    if (exact.some((a) => audioIdentity(a) === pref)) continue;
+    const legacy = audios.find((a) => audioIdentity(a).split("|").slice(0, 3).join("|") === pref || legacyAudioKey(a.label) === pref);
+    if (legacy && !exact.includes(legacy)) exact.push(legacy);
+  }
+  return exact;
 }
 
 // canonCodec folds the spelling variants of one codec together ("e-ac3" and
@@ -78,7 +84,7 @@ function codecOfName(name: string): string {
 // ("01. Многоголосый. AniLibria (RUS)"), not picker labels, so they are matched
 // the way the downloader itself matches them: the studio token appears somewhere
 // in the track name (see audioMatches in internal/domain/audio.go).
-export function matchDownloadedAudio<T extends Pick<DiscoverAudio, "filter" | "codec">>(
+export function matchDownloadedAudio<T extends Pick<DiscoverAudio, "filter" | "codec"> & Partial<DiscoverAudio>>(
   audios: T[],
   downloadedNames: string[],
 ): T[] {
@@ -90,6 +96,8 @@ export function matchDownloadedAudio<T extends Pick<DiscoverAudio, "filter" | "c
     const tagged = isTaggedCodec(a);
     const codec = canonCodec((a.codec || "").toLowerCase());
     return names.some((n) => {
+      const source = sourceOfAudio(a);
+      if (source && /\[[^\]]+ \d+ch\]$/.test(n)) return matchesRecordedSource(source, n);
       if (!n.includes(studio)) return false;
       if (isCommentaryName(n) && !isCommentaryAudio(a)) return false;
       // One studio can offer several renditions; only the codec tells them
@@ -199,6 +207,21 @@ export function audioSelectionSpecs(audios: DiscoverAudio[]): AudioSpec[] {
     if (isTaggedCodec(audio) && audio.codec) require.push(audio.codec);
     const forbid = isTaggedCodec(audio) ? [] : [...TAGGED_CODECS];
     if (!isCommentaryAudio(audio)) forbid.push(...COMMENTARY_MARKERS);
-    return { require, forbid };
+    const source = sourceOfAudio(audio);
+    return source ? { require, forbid, source } : { require, forbid };
   });
+}
+
+function sourceOfAudio(audio: Partial<DiscoverAudio>): AudioSpec["source"] {
+  if (audio.index === undefined && !audio.lang && !audio.type && !audio.author) return undefined;
+  return { language: audio.lang || "", type: audio.type || "", author: audio.author || "", codec: audio.codec || "", channels: audio.channels || 0 };
+}
+
+function matchesRecordedSource(source: NonNullable<AudioSpec["source"]>, name: string): boolean {
+  const details = /\s*\[([^\]]+) (\d+)ch\]$/.exec(name);
+  if (!details || (source.codec && canonCodec(details[1]) !== canonCodec(source.codec.toLowerCase())) || (source.channels && Number(details[2]) !== source.channels)) return false;
+  const body = name.replace(/\s*\[[^\]]+ \d+ch\]$/, "").replace(/^\s*\d+\.\s*/, "").replace(/\s+\(\d+\)$/, "")
+    .replace(/(\))\s+(?:e-?ac3|ac3|dts(?:-hd)?|true-?hd)(?:\s+[257]\.1)?$/i, "$1");
+  const expected = [source.type, source.author].filter(Boolean).join(". ") + ` (${source.language})`;
+  return body.trim().toLowerCase() === expected.trim().toLowerCase();
 }
