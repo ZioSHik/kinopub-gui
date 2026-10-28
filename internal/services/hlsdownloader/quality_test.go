@@ -58,6 +58,27 @@ func sampleVariants() []Variant {
 	}
 }
 
+func TestSelectVariantCroppedResolutionClass(t *testing.T) {
+	variants := []Variant{
+		{Width: 1920, Height: 800, Bandwidth: 3100000, Codecs: "avc1.640028"},
+		{Width: 1280, Height: 534, Bandwidth: 1400000, Codecs: "avc1.640028"},
+		{Width: 1280, Height: 534, Bandwidth: 700000, Codecs: "hvc1.2"},
+		{Width: 720, Height: 300, Bandwidth: 600000, Codecs: "avc1.640028"},
+	}
+	for _, tc := range []struct {
+		pref  domain.Quality
+		width int
+		h265  bool
+	}{
+		{"720p", 1280, false}, {"720p-h265", 1280, true}, {"1080p", 1920, false}, {"480p", 720, false},
+	} {
+		got, err := SelectVariant(variants, tc.pref)
+		if err != nil || got.Width != tc.width || got.IsH265() != tc.h265 {
+			t.Fatalf("%s selected %+v err %v", tc.pref, got, err)
+		}
+	}
+}
+
 func TestSelectVariant_EmptyError(t *testing.T) {
 	if _, err := SelectVariant(nil, ""); err == nil {
 		t.Fatal("expected an error for no variants")

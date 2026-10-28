@@ -79,11 +79,26 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 		Genres: genreTitles(item.Genres),
 	}
 	seasonCounts := map[int]int{}
+	originalLanguages := map[string]bool{}
 
-	add := func(season, episode int, title string, duration int, files []File) {
+	add := func(season, episode int, title string, duration int, files []File, subtitles []Subtitle, audios []Audio) {
+		for _, audio := range audios {
+			kind := strings.ToLower(strings.TrimSpace(audio.Type.Title))
+			lang := strings.ToLower(strings.TrimSpace(audio.Lang))
+			if (kind == "оригинал" || kind == "original") && lang != "" && !originalLanguages[lang] {
+				originalLanguages[lang] = true
+				pl.OriginalLanguages = append(pl.OriginalLanguages, lang)
+			}
+		}
 		manifest := bestManifest(files)
 		if manifest == "" {
 			return
+		}
+		var subs []domain.SubtitleSource
+		for _, sub := range subtitles {
+			if strings.TrimSpace(sub.URL) != "" {
+				subs = append(subs, domain.SubtitleSource{URL: sub.URL, Language: sub.Lang, Name: sub.Lang})
+			}
 		}
 		pl.Episodes = append(pl.Episodes, domain.PageEpisode{
 			ManifestURL:  manifest,
@@ -91,6 +106,7 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 			Duration:     duration,
 			Season:       season,
 			Episode:      episode,
+			Subtitles:    subs,
 		})
 		seasonCounts[season]++
 	}
@@ -102,7 +118,7 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 				if title == "" {
 					title = fmt.Sprintf("Серия %d", ep.Number)
 				}
-				add(sea.Number, ep.Number, title, int(ep.Duration), ep.Files)
+				add(sea.Number, ep.Number, title, int(ep.Duration), ep.Files, ep.Subtitles, ep.Audios)
 			}
 		}
 	} else {
@@ -115,7 +131,7 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 			if title == "" {
 				title = item.Title
 			}
-			add(1, epNum, title, int(v.Duration), v.Files)
+			add(1, epNum, title, int(v.Duration), v.Files, v.Subtitles, v.Audios)
 		}
 	}
 

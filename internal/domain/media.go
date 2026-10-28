@@ -50,11 +50,18 @@ type SubtitleTrack struct {
 	Source   string // source label (HLS NAME); may be empty
 }
 
+// SubtitleSource is an external subtitle file supplied by the catalog API.
+type SubtitleSource struct {
+	URL      string
+	Language string
+	Name     string
+}
+
 // TrackKind distinguishes track types for progress reporting.
 type TrackKind int
 
 const (
-	TrackVideo    TrackKind = iota
+	TrackVideo TrackKind = iota
 	TrackAudio
 	TrackSubtitle
 )

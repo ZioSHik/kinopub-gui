@@ -214,6 +214,9 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// and let the user choose. The resulting preference is pushed to the HLS
 	// downloader for all episodes. This runs before progress rendering so the
 	// interactive prompt isn't clobbered by progress redraws.
+	if len(playlist.OriginalLanguages) == 1 {
+		cfg.AudioPref.OriginalLanguage = playlist.OriginalLanguages[0]
+	}
 	pref := e.resolveAudioPreference(ctx, cfg, selected, manifestMap)
 	e.deps.HLSDownloader.SetAudioPreference(pref)
 
@@ -995,11 +998,29 @@ func (e *engine) attemptHLSEpisode(
 		return epFatal, dlErr
 	}
 
-	// Mux downloaded video + audio streams into the final container.
+	if len(ep.Subtitles) > 0 && len(hlsResult.SubtitleTracks) == 0 {
+		subtitles, ok := e.deps.HLSDownloader.(domain.SubtitleDownloader)
+		if !ok {
+			os.RemoveAll(hlsResult.TempDir)
+			return epFatal, fmt.Errorf("downloader does not support external subtitles")
+		}
+		tracks, err := subtitles.DownloadSubtitles(ctx, ep.Subtitles, hlsResult.TempDir)
+		if err != nil {
+			if ctx.Err() != nil || isTransientDownloadError(err) {
+				return epRetryable, err
+			}
+			os.RemoveAll(hlsResult.TempDir)
+			return epFatal, err
+		}
+		hlsResult.SubtitleTracks = tracks
+	}
+
+	// Mux downloaded video, audio and subtitles into the final container.
 	log.Info("muxing",
 		domain.F("episode", epLabel),
 		domain.F("quality", fmt.Sprintf("%s @ %d kbps", hlsResult.Resolution, hlsResult.BitrateKbps)),
 		domain.F("audio_tracks", len(hlsResult.AudioTracks)),
+		domain.F("subtitle_tracks", len(hlsResult.SubtitleTracks)),
 	)
 
 	muxJob := domain.Job{
@@ -1200,8 +1221,9 @@ func (e *engine) buildSeriesFromPlaylist(playlist *domain.PagePlaylist, cfg doma
 				Season:  pe.Season,
 				Episode: pe.Episode,
 			},
-			Title:    pe.EpisodeTitle,
-			Duration: time.Duration(pe.Duration) * time.Second,
+			Title:     pe.EpisodeTitle,
+			Duration:  time.Duration(pe.Duration) * time.Second,
+			Subtitles: pe.Subtitles,
 			MediaSources: []domain.MediaSource{{
 				Kind: domain.MediaHLS,
 				URL:  pe.ManifestURL,

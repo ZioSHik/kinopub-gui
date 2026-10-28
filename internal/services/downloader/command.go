@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -389,15 +390,15 @@ func BuildRemuxArgs(job domain.Job, localInput, tempPath string) []string {
 	return args
 }
 
-// BuildHLSMuxArgs constructs ffmpeg arguments to mux a downloaded HLS video
-// file together with separately-downloaded audio track files into the final
-// container. Each audio file is a separate input; -c copy avoids re-encoding.
+// BuildHLSMuxArgs muxes downloaded video, audio and external subtitle files.
+// Video and audio use stream copy; text is converted only when the container requires it.
 //
 // Layout:
-//   -i video.ts -i audio_0.ts -i audio_1.ts ...
-//   -map 0:v -map 1:a -map 2:a ...
-//   -c copy
-//   -metadata:s:a:N title=... language=...
+//
+//	-i video.ts -i audio_0.ts -i audio_1.ts ...
+//	-map 0:v -map 1:a -map 2:a ...
+//	-c copy
+//	-metadata:s:a:N title=... language=...
 func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath string) []string {
 	var args []string
 
@@ -409,6 +410,9 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 	// Inputs 1..N: audio tracks.
 	for _, a := range hls.AudioTracks {
 		args = append(args, "-i", a.Path)
+	}
+	for _, sub := range hls.SubtitleTracks {
+		args = append(args, "-i", sub.Path)
 	}
 
 	// Map video from input 0.
@@ -423,6 +427,9 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 		// No separate audio — the video file may contain muxed audio. Map any
 		// audio streams from input 0 if present (ignore failure with ?).
 		args = append(args, "-map", "0:a?")
+	}
+	for i := range hls.SubtitleTracks {
+		args = append(args, "-map", fmt.Sprintf("%d:s:0", 1+len(hls.AudioTracks)+i))
 	}
 
 	// Stream copy.
@@ -452,6 +459,39 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 	finalPath := strings.TrimSuffix(tempPath, ".tmp")
 	if strings.HasSuffix(finalPath, ".mp4") {
 		outFormat = "mp4"
+	}
+	if len(hls.SubtitleTracks) > 0 {
+		if outFormat == "mp4" {
+			args = append(args, "-c:s", "mov_text")
+		} else {
+			for i, sub := range hls.SubtitleTracks {
+				if strings.EqualFold(filepath.Ext(sub.Path), ".vtt") {
+					args = append(args, fmt.Sprintf("-c:s:%d", i), "srt")
+				}
+			}
+		}
+		labels := make([]string, len(hls.SubtitleTracks))
+		for i, sub := range hls.SubtitleTracks {
+			labels[i] = sub.Name
+			if labels[i] == "" {
+				labels[i] = sub.Language
+			}
+			if labels[i] == "" {
+				labels[i] = "Subtitle"
+			}
+		}
+		labels = makeUnique(labels)
+		for i, sub := range hls.SubtitleTracks {
+			args = append(args, fmt.Sprintf("-metadata:s:s:%d", i), "title="+labels[i])
+			if sub.Language != "" {
+				args = append(args, fmt.Sprintf("-metadata:s:s:%d", i), "language="+ToISO6392(sub.Language))
+			}
+			if sub.Forced {
+				args = append(args, fmt.Sprintf("-disposition:s:%d", i), "forced")
+			} else {
+				args = append(args, fmt.Sprintf("-disposition:s:%d", i), "0")
+			}
+		}
 	}
 
 	// Container metadata.

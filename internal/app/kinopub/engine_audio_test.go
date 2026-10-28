@@ -223,3 +223,22 @@ func TestRunHLS_PushesAudioPreferenceToDownloader(t *testing.T) {
 		t.Errorf("pushed Include = %v, want [anilibria]", h.gotPref.Include)
 	}
 }
+
+func TestRunHLS_LegacyOriginalSpecUsesAPILanguage(t *testing.T) {
+	h := &trackHLS{tracks: []domain.AudioTrackInfo{
+		{Index: 0, Name: "Многоголосый (RUS)", Language: "rus"},
+		{Index: 1, Name: "Track 8 (ENG)", Language: "eng"},
+	}}
+	playlist := makePlaylist(1)
+	playlist.OriginalLanguages = []string{"eng"}
+	e, _, _ := newRetryTestEngine(h, &fakePageScraper{playlist: playlist})
+	cfg := retryTestConfig()
+	cfg.AudioPref = domain.AudioPreference{Specs: []domain.AudioSpec{{Require: []string{"Оригинал"}}}}
+	if _, err := e.runHLS(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	selected, fallback := domain.SelectAudioResolved(h.tracks, h.gotPref)
+	if !reflect.DeepEqual(selected, []int{1}) || fallback {
+		t.Fatalf("wrong legacy request selection: %v fallback=%v pref=%+v", selected, fallback, h.gotPref)
+	}
+}

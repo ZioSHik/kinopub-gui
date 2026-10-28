@@ -9,10 +9,10 @@ func TestItemIDFromURL(t *testing.T) {
 	cases := map[string]string{
 		"https://kino.watch/item/view/38290":      "38290",
 		"https://kino.watch/item/view/38290/s1e2": "38290",
-		"38290":                                 "38290",
-		"http://kino.watch/item/view/7/season/2":  "7",
-		"":                                      "",
-		"https://kino.watch/movies":               "",
+		"38290":                                  "38290",
+		"http://kino.watch/item/view/7/season/2": "7",
+		"":                                       "",
+		"https://kino.watch/movies":              "",
 	}
 	for in, want := range cases {
 		if got := ItemIDFromURL(in); got != want {
@@ -83,6 +83,28 @@ func TestBuildPagePlaylistSerial(t *testing.T) {
 	}
 }
 
+func TestBuildPagePlaylistCarriesOriginalLanguage(t *testing.T) {
+	audios := []Audio{
+		{Lang: "eng", Type: NamedID{Title: "Оригинал"}},
+		{Lang: "eng", Type: NamedID{Title: "Оригинал"}},
+		{Lang: "rus", Type: NamedID{Title: "Дубляж"}},
+		{Lang: "jpn", Type: NamedID{Title: "Оригинал. Комментарии"}},
+	}
+	files := []File{{URL: FileURL{HLS4: "https://cdn/master.m3u8"}}}
+	for _, item := range []Item{
+		{ID: json.Number("1"), Videos: []Video{{Files: files, Audios: audios}}},
+		{ID: json.Number("2"), Seasons: []Season{{Number: 1, Episodes: []Episode{{Number: 1, Files: files, Audios: audios}}}}},
+	} {
+		pl, err := BuildPagePlaylist(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pl.OriginalLanguages) != 1 || pl.OriginalLanguages[0] != "eng" {
+			t.Fatalf("wrong original languages: %v", pl.OriginalLanguages)
+		}
+	}
+}
+
 func TestBuildPagePlaylistMovie(t *testing.T) {
 	item := Item{
 		ID:    json.Number("7"),
@@ -114,5 +136,26 @@ func TestBuildPagePlaylistNoFiles(t *testing.T) {
 	item := Item{ID: json.Number("9"), Title: "Locked", Videos: []Video{{Number: 1}}}
 	if _, err := BuildPagePlaylist(item); err == nil {
 		t.Fatal("expected error for item with no playable files")
+	}
+}
+
+func TestBuildPagePlaylistKeepsExternalSubtitles(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		item := Item{ID: json.Number("9"), Title: "Subtitled"}
+		files := []File{{URL: FileURL{HLS4: "https://cdn.test/master.m3u8"}}}
+		subs := []Subtitle{{Lang: "rus", URL: "https://cdn.test/ru.srt"}, {Lang: "eng", URL: "https://cdn.test/en.srt"}, {Lang: "unknown"}}
+		if serial {
+			item.Seasons = []Season{{Number: 2, Episodes: []Episode{{Number: 3, Files: files, Subtitles: subs}}}}
+		} else {
+			item.Videos = []Video{{Number: 1, Files: files, Subtitles: subs}}
+		}
+		pl, err := BuildPagePlaylist(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := pl.Episodes[0].Subtitles
+		if len(got) != 2 || got[0].URL != subs[0].URL || got[0].Language != "rus" || got[1].Language != "eng" {
+			t.Fatalf("serial=%v: lost API subtitles: %+v", serial, got)
+		}
 	}
 }

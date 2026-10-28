@@ -209,9 +209,7 @@ type Audio struct {
 	Author   NamedID     `json:"author"` // LostFilm / HDrezka / ...
 }
 
-// Subtitle describes one subtitle track. Only the fields the UI needs are
-// declared; the JSON decoder ignores the rest (avoids type-mismatch surprises
-// on fields whose API types vary).
+// Subtitle describes an external subtitle file returned with an episode or movie.
 type Subtitle struct {
 	Lang string `json:"lang"`
 	URL  string `json:"url"`
