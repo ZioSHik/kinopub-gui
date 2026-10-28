@@ -530,6 +530,11 @@ const RU: Record<string, string> = {
     "Часть временных файлов не удалось удалить — проверьте папку загрузок",
   "Couldn't scan your folders": "Не удалось просканировать папки",
   "Finished downloads": "Завершённые загрузки",
+  "Unknown quality": "Разрешение не указано",
+  "Play {episode} · {quality}": "Воспроизвести {episode} · {quality}",
+  "Delete {episode} from disk": "Удалить {episode} с диска",
+  "Delete all versions of this episode": "Удалить все версии этой серии",
+  "{n} files": "{n} файлов",
   "Not enough disk space. Free space in the download folder, then retry.":
     "Недостаточно места на диске. Освободите место в папке загрузки и повторите попытку.",
 };
