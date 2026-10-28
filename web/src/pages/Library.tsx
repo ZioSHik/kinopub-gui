@@ -34,6 +34,7 @@ import {
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
 import { dismiss, pushRoute, replaceRoute, useRoute } from "../router";
+import { voiceoverCounts, voiceoverLabels } from "../lib/libraryAudio";
 import { bytes, relTime } from "../lib/format";
 import { completedSignal, itemIdFromURL } from "../lib/queue";
 import { EmptyState, Modal, PosterImage, Spinner } from "../components/ui";
@@ -92,9 +93,13 @@ export function supersededByLibrary(job: JobView, series: LibrarySeries[]): bool
   // No planned episodes means the run died before resolving; there is nothing to
   // claim is already downloaded.
   if (job.episodes.length === 0) return false;
+  if (job.status !== "completed") return false;
   const id = itemIdFromURL(job.url);
   if (!id) return false;
-  const entry = series.find((s) => itemIdOf(s) === id);
+  const output = job.outputPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const entry = series.find(
+    (s) => itemIdOf(s) === id && (!output || s.dir.replace(/\\/g, "/").startsWith(output + "/")),
+  );
   if (!entry) return false;
   const onDisk = new Set(
     (entry.episodes ?? []).filter((e) => e.exists).map((e) => `${e.season}:${e.episode}`),
@@ -196,7 +201,94 @@ function useSeriesActions(s: LibrarySeries, onDeleted: () => void) {
   return { openPath, remove, removeEpisode, deleting, removingKey };
 }
 
-// EpisodeRow is one file inside an episode list.
+function VoiceoverSummary({ episodes }: { episodes: LibraryEpisode[] }) {
+  const { t } = useI18n();
+  const counts = voiceoverCounts(episodes);
+  if (!counts.length) return null;
+  const text = counts.map(({ label, count }) =>
+    `${label || t("Voiceover not recorded")} — ${t("{n} ep", { n: count })}`,
+  ).join("; ");
+  return <p className="mt-1 text-xs leading-relaxed text-sky-300/70" title={text}>{t("Voiceover")}: {text}</p>;
+}
+
+function FileVersions({ episode }: { episode: LibraryEpisode }) {
+  const { toast } = useApp();
+  const { t } = useI18n();
+  if (!episode.versions?.length) return null;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {[episode, ...episode.versions].map((file) => (
+        <button
+          key={file.path}
+          className="rounded bg-white/5 px-2 py-1 text-xs text-slate-400 disabled:opacity-40"
+          title={[file.resolution, ...(file.audio || [])].filter(Boolean).join(" · ")}
+          disabled={!file.exists}
+          onClick={(event) => {
+            event.stopPropagation();
+            void api.openPath(file.path).catch((e) => toast(e.message, "error"));
+          }}
+        >
+          {t("Play")} · {file.resolution || file.requestedQuality || file.path.split(".").pop()}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+function episodeFiles(episode: LibraryEpisode): LibraryEpisode[] {
+  const pixels = (file: LibraryEpisode) => {
+    const [width, height] = (file.resolution || "").split("x").map(Number);
+    return (width || 0) * (height || 0);
+  };
+  return [episode, ...(episode.versions || [])].sort((a, b) =>
+    Number(b.exists) - Number(a.exists) || pixels(b) - pixels(a),
+  );
+}
+
+function EpisodeFile({ file, episodeKey, onOpen }: {
+  file: LibraryEpisode;
+  episodeKey: string;
+  onOpen: (file: LibraryEpisode) => void;
+}) {
+  const { t } = useI18n();
+  const resolution = file.resolution?.replace("x", " × ") ||
+    (file.requestedQuality !== "optimal" && file.requestedQuality) || t("Unknown quality");
+  const format = file.path.split(".").pop()?.toUpperCase() || "";
+  const voices = voiceoverLabels(file.audio);
+  return (
+    <div role="group" aria-label={`${resolution} · ${format}`}
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 py-3 first:pt-0 last:pb-0">
+      <div className="min-w-0 space-y-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+          <span className="inline-flex items-center gap-1.5 font-medium tabular-nums text-slate-300">
+            <MonitorPlay className="h-3.5 w-3.5 shrink-0 text-slate-500" /> {resolution}
+          </span>
+          {format && <span>{format}</span>}
+          <span aria-hidden="true">·</span>
+          <span className="tabular-nums">{bytes(file.bytes)}</span>
+          {!file.exists && <span className="text-ember-400">{t("File missing")}</span>}
+        </div>
+        <div className="flex flex-wrap gap-1.5 text-xs leading-relaxed">
+          {voices.length ? voices.map((voice) => (
+            <span key={voice} className="max-w-full break-words rounded-md bg-sky-400/[0.07] px-2 py-0.5 text-sky-200/80">{voice}</span>
+          )) : <span className="text-slate-500">{t("Voiceover not recorded")}</span>}
+        </div>
+      </div>
+      <button
+        className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-gold-500/15 bg-gold-500/[0.08] px-3 text-xs font-medium text-gold-200 transition hover:border-gold-500/35 hover:bg-gold-500/[0.15] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-500/60 disabled:cursor-not-allowed disabled:border-white/[0.05] disabled:bg-white/[0.02] disabled:text-slate-600"
+        aria-label={t("Play {episode} · {quality}", { episode: episodeKey, quality: `${resolution} · ${format}` })}
+        title={file.exists ? t("Play") : t("File missing")}
+        disabled={!file.exists}
+        onClick={() => onOpen(file)}
+      >
+        <Play className="h-3.5 w-3.5" />
+        <span className="hidden sm:inline">{t("Play")}</span>
+      </button>
+    </div>
+  );
+}
+
+// Keep the episode title separate from the files and tracks it contains.
 function EpisodeRow({
   e,
   busy,
@@ -205,58 +297,39 @@ function EpisodeRow({
 }: {
   e: LibraryEpisode;
   busy: boolean;
-  onOpen: () => void;
+  onOpen: (file: LibraryEpisode) => void;
   onDelete: () => void;
 }) {
   const { t } = useI18n();
+  const files = episodeFiles(e);
+  const available = files.some((file) => file.exists);
+  const title = e.title || t("Episode {n}", { n: e.episode });
   return (
-    <div
-      className={clsx(
-        "group flex items-center gap-2.5 rounded-lg border border-transparent px-2 py-1.5 text-sm transition",
-        e.exists ? "hover:border-white/[0.06] hover:bg-white/[0.03]" : "bg-ember-500/[0.04]",
-      )}
-    >
-      {e.exists ? (
-        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400/80" />
-      ) : (
-        <span title={t("File missing")}>
-          <XCircle className="h-4 w-4 shrink-0 text-ember-400/80" />
+    <article aria-label={`${e.key} · ${title}`} className="rounded-xl border border-white/[0.07] bg-white/[0.015] px-3 py-3 sm:px-4">
+      <div className="mb-2 flex items-start gap-2.5">
+        <span className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md bg-white/[0.04] px-2 font-mono text-[11px] text-slate-400">
+          {available ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400/80" /> : <XCircle className="h-3.5 w-3.5 text-ember-400/80" />}
+          {e.key}
         </span>
-      )}
-      <span className="shrink-0 rounded-md bg-white/[0.05] px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-slate-400">
-        {e.key}
-      </span>
-      <span className={clsx("min-w-0 flex-1 truncate", e.exists ? "text-slate-300" : "text-slate-500 line-through")}>
-        {e.title || t("Episode {n}", { n: e.episode })}
-      </span>
-      {e.resolution && <span className="hidden shrink-0 text-[11px] text-slate-500 sm:inline">{e.resolution}</span>}
-      <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500">{bytes(e.bytes)}</span>
-      {/* Row actions stay visible on touch screens (no hover) and fade in on desktop. */}
-      <span className="flex shrink-0 items-center gap-0.5 transition sm:opacity-0 sm:focus-within:opacity-100 sm:group-hover:opacity-100">
-        {e.exists && (
-          <button
-            className="rounded-md p-1 text-slate-500 transition hover:bg-white/[0.08] hover:text-gold-300"
-            title={t("Play")}
-            onClick={onOpen}
-          >
-            <Play className="h-3.5 w-3.5" />
-          </button>
-        )}
+        <h4 className="min-w-0 flex-1 break-words pt-0.5 text-sm font-medium leading-relaxed text-slate-200">{title}</h4>
         <button
-          className="rounded-md p-1 text-slate-500 transition hover:bg-ember-500/10 hover:text-ember-300 disabled:opacity-100"
-          title={t("Delete this episode from disk")}
+          className="shrink-0 rounded-md p-1.5 text-slate-600 transition hover:bg-ember-500/10 hover:text-ember-300 focus-visible:text-ember-300 disabled:opacity-40"
+          aria-label={t("Delete {episode} from disk", { episode: e.key })}
+          title={files.length > 1 ? t("Delete all versions of this episode") : t("Delete this episode from disk")}
           onClick={onDelete}
           disabled={busy}
         >
-          {busy ? <Spinner className="h-3.5 w-3.5" /> : <Trash2 className="h-3.5 w-3.5" />}
+          {busy ? <Spinner className="h-4 w-4" /> : <Trash2 className="h-4 w-4" />}
         </button>
-      </span>
-    </div>
+      </div>
+      <div className="divide-y divide-white/[0.06] sm:ml-[5.5rem]">
+        {files.map((file) => <EpisodeFile key={file.path} file={file} episodeKey={e.key} onOpen={onOpen} />)}
+      </div>
+    </article>
   );
 }
 
-// EpisodeList renders the files of an entry grouped into seasons. Season headers
-// only appear for a multi-season show, where they carry information.
+// Group episodes by season, keeping every file and its voiceovers together.
 function EpisodeList({
   bySeason,
   removingKey,
@@ -273,22 +346,20 @@ function EpisodeList({
     <div className="space-y-3">
       {bySeason.map(([season, eps]) => (
         <div key={season}>
-          {bySeason.length > 1 && (
-            <div className="mb-1.5 flex items-center gap-2 px-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                {t("Season {n}", { n: season })}
-              </span>
-              <span className="text-[11px] text-slate-600">{t("{n} ep", { n: eps.length })}</span>
-              <span className="h-px flex-1 bg-white/[0.06]" />
-            </div>
-          )}
-          <div className="grid gap-1 sm:grid-cols-2">
+          <div className="mb-2.5 flex items-center gap-2 px-1">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              {t("Season {n}", { n: season })}
+            </span>
+            <span className="text-[11px] text-slate-600">{t("{n} ep", { n: eps.length })}</span>
+            <span className="h-px flex-1 bg-white/[0.06]" />
+          </div>
+          <div className="space-y-2">
             {eps.map((e) => (
               <EpisodeRow
                 key={e.key}
                 e={e}
                 busy={removingKey === e.key}
-                onOpen={() => onOpen(e)}
+                onOpen={onOpen}
                 onDelete={() => onDelete(e)}
               />
             ))}
@@ -431,6 +502,8 @@ function SeriesCard({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
             ))}
           </div>
 
+          <VoiceoverSummary episodes={episodes} />
+
           {genres.length > 0 && (
             <div className="mt-2">
               <GenreChips genres={genres} onPick={onPickGenre} />
@@ -452,6 +525,8 @@ function SeriesCard({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
             <FolderOpen className="h-3 w-3 shrink-0" />
             <span className="truncate">{s.dir}</span>
           </button>
+
+          {single && <FileVersions episode={single} />}
 
           {/* Actions live on the card itself — only the episode list is behind a cut. */}
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
@@ -643,6 +718,7 @@ function SeriesTile({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
       <p className="mt-2 truncate text-sm font-semibold text-slate-100" title={s.title}>
         {s.title}
       </p>
+      {single && <FileVersions episode={single} />}
       {/* Empty meta lines are omitted rather than filled: a blank filler row read
           as a hole under the title. Grid rows size to their tallest tile, so the
           posters in a row still line up. */}
@@ -657,6 +733,7 @@ function SeriesTile({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
         {s.updatedAt && ` · ${relTime(s.updatedAt, t)}`}
         {missing > 0 && <span className="text-ember-400"> · {t("{n} missing", { n: missing })}</span>}
       </p>
+      <VoiceoverSummary episodes={episodes} />
       {genres.length > 0 && (
         <p className="truncate text-[11px] text-slate-600" title={genres.join(", ")}>
           {genres.slice(0, 2).join(" · ")}
@@ -668,17 +745,14 @@ function SeriesTile({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
         open={showEpisodes}
         onClose={() => setShowEpisodes(false)}
         wide
+        scrollable
         title={
-          <span className="flex items-center gap-2">
-            {s.title}
-            <span className="text-sm font-normal text-slate-500">{t("{n} ep", { n: episodes.length })}</span>
+          <span className="flex min-w-0 flex-col gap-1 pr-2">
+            <span className="break-words">{s.title}</span>
+            <span className="text-xs font-normal text-slate-500">{t("{n} episodes", { n: episodes.length })} · {t("{n} files", { n: episodes.reduce((count, e) => count + episodeFiles(e).filter((file) => file.exists).length, 0) })}</span>
           </span>
         }
       >
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <TypeBadge isMovie={s.isMovie} />
-          <GenreChips genres={genres} onPick={onPickGenre} />
-        </div>
         <EpisodeList
           bySeason={bySeason}
           removingKey={removingKey}
@@ -721,9 +795,9 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
   const [query, setQuery] = useState("");
   // Tiles are the default: this page is a media library first, and a poster wall
   // reads faster than a stack of rows.
-  const [view, setView] = useState<ViewMode>(() =>
-    localStorage.getItem(VIEW_KEY) === "list" ? "list" : "grid",
-  );
+  const [view, setView] = useState<ViewMode>(() => {
+    try { return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "grid"; } catch { return "grid"; }
+  });
   // The open card lives in the URL hash ("#/library/i/<id>") so it survives a
   // reload and browser back closes it.
   const cardId = useRoute().itemId ?? null;
@@ -764,7 +838,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
 
   const setViewMode = (v: ViewMode) => {
     setView(v);
-    localStorage.setItem(VIEW_KEY, v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* The selected view still applies to this session. */ }
   };
 
   const series = data?.series ?? [];
@@ -795,6 +869,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
     return !supersededByLibrary(j, series);
   });
   const dismissable = jobs.filter((j) => ["completed", "failed", "canceled"].includes(j.status)).length;
+  const queuedCount = liveJobs.filter((j) => j.status !== "failed" && j.status !== "canceled").length;
 
   const clearFinished = async () => {
     try {
@@ -855,8 +930,8 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
               ? scanError
                 ? t("Couldn't scan your folders")
                 : t("Scanning your folders…")
-              : liveJobs.length > 0
-                ? t("{n} downloading · {m} on disk", { n: liveJobs.length, m: series.length })
+              : queuedCount > 0
+                ? t("{n} in the queue · {m} on disk", { n: queuedCount, m: series.length })
                 : t("Downloads found in your output folders")}
           </p>
         </div>
@@ -880,7 +955,7 @@ export function LibraryPage({ onNew }: { onNew: () => void }) {
         <section className="space-y-3">
           <div className="flex items-center gap-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              {liveJobs.length > 0 ? t("Downloading") : t("Finished downloads")}
+              {queuedCount > 0 ? t("Downloading") : t("Finished downloads")}
             </h2>
             {liveJobs.length > 0 && (
               <span className="chip border-gold-500/25 bg-gold-500/10 text-gold-300">{liveJobs.length}</span>

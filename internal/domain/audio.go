@@ -20,6 +20,7 @@ type AudioTrackInfo struct {
 	// Language is the raw language tag from the source, e.g. "rus", "jpn".
 	// It may be empty when the source only encodes the language in Name.
 	Language string
+	Source   *AudioSource
 }
 
 // AudioPreference describes which audio tracks to keep for a download run.
@@ -56,6 +57,8 @@ type AudioPreference struct {
 	// Forbid:["ac3"]) vs. its 5.1 sibling (Require:["tvshows","ac3"]) — which the
 	// substring Include/Exclude filter cannot express. Set by the GUI picker.
 	Specs []AudioSpec
+	// Catalog metadata is episode-specific: track ordinals can move between episodes.
+	EpisodeSources map[EpisodeKey][]AudioSource `json:"-"`
 }
 
 // AudioSpec is one exact-match rule for an audio track: keep the track iff it
@@ -64,10 +67,22 @@ type AudioPreference struct {
 type AudioSpec struct {
 	Require []string
 	Forbid  []string
+	Source  *AudioSource `json:",omitempty"`
 }
 
 // matches reports whether track t satisfies this spec.
 func (s AudioSpec) matches(t AudioTrackInfo) bool {
+	if s.Source != nil {
+		if t.Source != nil {
+			return s.Source.sameRendition(*t.Source)
+		}
+		return s.Source.matchesRecorded(t.Name)
+	}
+	// The source labels commentary as "Original. Commentary". It is a separate
+	// kind of audio, not an extra match for an ordinary original/studio spec.
+	if IsCommentaryAudio(t.Name) && !requestsCommentary(s.Require) {
+		return false
+	}
 	for _, r := range s.Require {
 		if !audioMatches(t, r) {
 			return false
@@ -146,6 +161,9 @@ func audioMatches(t AudioTrackInfo, pattern string) bool {
 		return false
 	}
 	hay := strings.ToLower(t.Name + " " + t.Language)
+	if codec := AudioCodec(p); codec != "" && strings.ReplaceAll(p, "-", "") == codec {
+		return AudioCodec(hay) == codec
+	}
 	if strings.Contains(hay, p) {
 		return true
 	}
@@ -178,7 +196,8 @@ func preferRank(t AudioTrackInfo, prefer []string) int {
 
 // SelectAudio resolves which audio tracks to keep for an episode given a
 // preference. It returns the indices (into tracks) to download, in ascending
-// order. The result is deterministic and never empty unless tracks is empty.
+// order. The result is deterministic. If only unrequested commentary is
+// available, it returns no tracks.
 //
 // Algorithm:
 //  1. Drop tracks matching any Exclude pattern. If that removes everything, the
@@ -223,6 +242,31 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	// absent this episode), fall back to the single best track by Prefer rank so
 	// the output always carries audio.
 	if len(pref.Specs) > 0 {
+		if pref.IsExactSourceSelection() {
+			selected := make(map[int]bool)
+			for _, spec := range pref.Specs {
+				found := false
+				for i, track := range tracks {
+					if spec.matches(track) {
+						found = true
+						selected[i] = true
+						if spec.Source != nil {
+							break
+						} // one picker entry means one rendition
+					}
+				}
+				if !found {
+					return nil, true
+				}
+			}
+			indices := make([]int, 0, len(selected))
+			for i := range tracks {
+				if selected[i] {
+					indices = append(indices, i)
+				}
+			}
+			return indices, false
+		}
 		matched := make([]int, 0, len(tracks))
 		for i, t := range tracks {
 			for _, s := range pref.Specs {
@@ -235,9 +279,14 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 		if len(matched) > 0 {
 			return matched, false
 		}
-		best := make([]int, len(tracks))
-		for i := range tracks {
-			best[i] = i
+		best := make([]int, 0, len(tracks))
+		for i, track := range tracks {
+			if !IsCommentaryAudio(track.Name) || pref.RequestsCommentary() {
+				best = append(best, i)
+			}
+		}
+		if len(best) == 0 {
+			return nil, true
 		}
 		sort.SliceStable(best, func(a, b int) bool {
 			ra, rb := preferRank(tracks[best[a]], pref.Prefer), preferRank(tracks[best[b]], pref.Prefer)
@@ -272,7 +321,7 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	// 3. Keep includes among the remaining tracks.
 	matched := make([]int, 0, len(remaining))
 	for _, i := range remaining {
-		if matchesAny(tracks[i], pref.Include) {
+		if matchesRequestedAudio(tracks[i], pref.Include) {
 			matched = append(matched, i)
 		}
 	}
@@ -281,7 +330,15 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	}
 
 	// 4. Fallback: pick the single best remaining track.
-	best := append([]int(nil), remaining...)
+	best := make([]int, 0, len(remaining))
+	for _, i := range remaining {
+		if !IsCommentaryAudio(tracks[i].Name) || pref.RequestsCommentary() {
+			best = append(best, i)
+		}
+	}
+	if len(best) == 0 {
+		return nil, true
+	}
 	sort.SliceStable(best, func(a, b int) bool {
 		ra, rb := preferRank(tracks[best[a]], pref.Prefer), preferRank(tracks[best[b]], pref.Prefer)
 		if ra != rb {
@@ -301,7 +358,7 @@ func DeriveAudioPrefer(tracks []AudioTrackInfo, include []string) []string {
 	seen := make(map[string]bool)
 	var out []string
 	for _, t := range tracks {
-		if !matchesAny(t, include) {
+		if !matchesRequestedAudio(t, include) {
 			continue
 		}
 		lang := normLang(t.Language)
@@ -485,4 +542,113 @@ func anyChosenMatches(tracks []AudioTrackInfo, chosen map[int]bool, pattern stri
 		}
 	}
 	return false
+}
+
+// AudioCodec returns the most specific named codec, folding spelling aliases.
+func AudioCodec(name string) string {
+	name = strings.ToLower(name)
+	best := ""
+	for _, codec := range []string{"ac3", "eac3", "e-ac3", "dts", "dts-hd", "truehd", "true-hd"} {
+		if strings.Contains(name, codec) && len(codec) > len(best) {
+			best = codec
+		}
+	}
+	return strings.ReplaceAll(best, "-", "")
+}
+
+// Covers reports whether every explicitly requested voiceover is already present.
+// An all-tracks request needs a recorded all-tracks download, not just one match.
+func (p AudioPreference) Covers(names []string, all bool) bool {
+	if p.IsAll() {
+		return all
+	}
+	tracks := make([]AudioTrackInfo, len(names))
+	for i, name := range names {
+		tracks[i] = AudioTrackInfo{Name: name}
+	}
+	for _, spec := range p.Specs {
+		found := false
+		for _, track := range tracks {
+			if spec.matches(track) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, include := range p.Include {
+		found := false
+		for _, track := range tracks {
+			if matchesRequestedAudio(track, []string{include}) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return len(names) > 0
+}
+
+// IsGenericOriginalAudio recognizes unnamed original tracks from API language metadata.
+func IsGenericOriginalAudio(name, language, original string) bool {
+	return original != "" && language != "" && genericAudioName.MatchString(name) && normLang(language) == normLang(original)
+}
+
+var audioTrackOrdinal = regexp.MustCompile(`^\s*\d+\.\s*`)
+var audioDuplicateOrdinal = regexp.MustCompile(`\s+\(\d+\)$`)
+
+// SameAudioRendition ignores numbering added by the source or by the muxer,
+// while preserving the studio, language and codec in a track's identity.
+func SameAudioRendition(a, b string) bool {
+	canonical := func(name string) string {
+		details := ""
+		if match := sourceDetails.FindStringSubmatch(name); len(match) > 0 {
+			details = " [" + strings.ReplaceAll(strings.ToLower(match[1]), "-", "") + " " + match[2] + "ch]"
+			name = sourceDetails.ReplaceAllString(name, "")
+			name = legacyCodecSuffix.ReplaceAllString(name, "$1")
+		}
+		name = audioTrackOrdinal.ReplaceAllString(strings.TrimSpace(name), "")
+		name = audioDuplicateOrdinal.ReplaceAllString(name, "")
+		return strings.ToLower(name) + details
+	}
+	return canonical(a) == canonical(b)
+}
+
+// IsCommentaryAudio recognizes explicit commentary labels in Russian/English.
+func IsCommentaryAudio(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "комментар") || strings.Contains(name, "commentar")
+}
+
+func requestsCommentary(patterns []string) bool {
+	for _, pattern := range patterns {
+		if IsCommentaryAudio(pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequestsCommentary is based only on positive selection, never on exclusions.
+func (p AudioPreference) RequestsCommentary() bool {
+	if requestsCommentary(p.Include) {
+		return true
+	}
+	for _, spec := range p.Specs {
+		if requestsCommentary(spec.Require) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesRequestedAudio(track AudioTrackInfo, patterns []string) bool {
+	if IsCommentaryAudio(track.Name) && !requestsCommentary(patterns) {
+		return false
+	}
+	return matchesAny(track, patterns)
 }

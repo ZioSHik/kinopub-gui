@@ -5,7 +5,10 @@
 package httpx
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -37,15 +40,53 @@ type browserTransport struct {
 	proxyURL  *url.URL
 	mu        sync.Mutex
 	h1        *http.Transport
+	plain     *http.Transport
+	h1Hosts   map[string]bool
 	h2Clients map[string]*http2.ClientConn // host → h2 conn
 }
 
 func (t *browserTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.URL.Scheme != "https" {
-		// Plain HTTP — use default transport.
-		return http.DefaultTransport.RoundTrip(req)
+		// Plain HTTP uses a pooled transport with the same configured proxy.
+		t.mu.Lock()
+		if t.plain == nil {
+			if defaults, ok := http.DefaultTransport.(*http.Transport); ok {
+				t.plain = defaults.Clone()
+			} else {
+				t.plain = &http.Transport{IdleConnTimeout: 90 * time.Second}
+			}
+			t.plain.Proxy = http.ProxyURL(t.proxyURL)
+		}
+		plain := t.plain
+		t.mu.Unlock()
+		return plain.RoundTrip(req)
 	}
 
+	// Reuse an established protocol/connection before opening another TLS socket.
+	t.mu.Lock()
+	cc, h1Known := t.h2Clients[req.URL.Host], t.h1Hosts[req.URL.Host]
+	t.mu.Unlock()
+	if cc != nil {
+		response, err := cc.RoundTrip(req)
+		if err == nil {
+			return response, nil
+		}
+		if req.Context().Err() != nil {
+			return nil, err
+		}
+		t.mu.Lock()
+		if t.h2Clients[req.URL.Host] == cc {
+			delete(t.h2Clients, req.URL.Host)
+		}
+		t.mu.Unlock()
+		cc.Close()
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			return nil, err
+		}
+	}
+	if h1Known {
+		return t.roundTripH1(req, nil)
+	}
 	// Establish TLS connection with Chrome fingerprint.
 	addr := req.URL.Host
 	if !hasPort(addr) {
@@ -64,6 +105,12 @@ func (t *browserTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 
 	// HTTP/1.1
+	t.mu.Lock()
+	if t.h1Hosts == nil {
+		t.h1Hosts = make(map[string]bool)
+	}
+	t.h1Hosts[req.URL.Host] = true
+	t.mu.Unlock()
 	return t.roundTripH1(req, tlsConn)
 }
 
@@ -85,7 +132,7 @@ func (t *browserTransport) dialProxy(ctx context.Context, addr string) (net.Conn
 				auth.Password = pass
 			}
 		}
-		socksDialer, err := proxy.SOCKS5("tcp", t.proxyURL.Host, auth, proxy.Direct)
+		socksDialer, err := proxy.SOCKS5("tcp", t.proxyURL.Host, auth, baseDialer)
 		if err != nil {
 			return nil, fmt.Errorf("socks5 dialer: %w", err)
 		}
@@ -94,40 +141,74 @@ func (t *browserTransport) dialProxy(ctx context.Context, addr string) (net.Conn
 		}
 		return socksDialer.Dial("tcp", addr)
 
-	default:
-		// HTTP/HTTPS proxy: dial proxy, then send CONNECT.
-		conn, err := baseDialer.DialContext(ctx, "tcp", t.proxyURL.Host)
+	case "http", "https":
+		proxyAddr := t.proxyURL.Host
+		if t.proxyURL.Port() == "" {
+			port := "80"
+			if t.proxyURL.Scheme == "https" {
+				port = "443"
+			}
+			proxyAddr = net.JoinHostPort(t.proxyURL.Hostname(), port)
+		}
+		conn, err := baseDialer.DialContext(ctx, "tcp", proxyAddr)
 		if err != nil {
 			return nil, fmt.Errorf("proxy dial: %w", err)
 		}
-		req, _ := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+addr, nil)
-		req.Host = addr
-		if t.proxyURL.User != nil {
-			req.SetBasicAuth(t.proxyURL.User.Username(), func() string {
-				p, _ := t.proxyURL.User.Password()
-				return p
-			}())
+		success := false
+		defer func() {
+			if !success {
+				conn.Close()
+			}
+		}()
+		rawConn := conn
+		stop := context.AfterFunc(ctx, func() { rawConn.Close() })
+		defer stop()
+		deadline := time.Now().Add(30 * time.Second)
+		if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
+			deadline = end
 		}
-		if err := req.Write(conn); err != nil {
-			conn.Close()
+		conn.SetDeadline(deadline)
+		if t.proxyURL.Scheme == "https" {
+			secure := tls.Client(conn, &tls.Config{ServerName: t.proxyURL.Hostname(), MinVersion: tls.VersionTLS12})
+			if err := secure.HandshakeContext(ctx); err != nil {
+				return nil, fmt.Errorf("proxy TLS: %w", err)
+			}
+			conn = secure
+		}
+		request, _ := http.NewRequestWithContext(ctx, http.MethodConnect, "http://"+addr, nil)
+		request.Host = addr
+		if t.proxyURL.User != nil {
+			password, _ := t.proxyURL.User.Password()
+			credentials := t.proxyURL.User.Username() + ":" + password
+			request.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(credentials)))
+		}
+		if err := request.Write(conn); err != nil {
 			return nil, fmt.Errorf("proxy CONNECT write: %w", err)
 		}
-		// Read response without buffering — we need the raw conn afterwards.
-		buf := make([]byte, 4096)
-		n, err := conn.Read(buf)
+		reader := bufio.NewReader(conn)
+		response, err := http.ReadResponse(reader, request)
 		if err != nil {
-			conn.Close()
 			return nil, fmt.Errorf("proxy CONNECT read: %w", err)
 		}
-		if n < 12 || string(buf[9:12]) != "200" {
-			conn.Close()
-			return nil, fmt.Errorf("proxy CONNECT failed: %s", string(buf[:n]))
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("proxy CONNECT failed: HTTP %d", response.StatusCode)
 		}
-		return conn, nil
+		conn.SetDeadline(time.Time{})
+		success = true
+		return &bufferedConn{Conn: conn, reader: reader}, nil
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme: %s", t.proxyURL.Scheme)
 	}
 }
 
-func (t *browserTransport) dialTLS(ctx context.Context, addr string) (net.Conn, string, error) {
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func (t *browserTransport) dialTLS(ctx context.Context, addr string, http1Only ...bool) (net.Conn, string, error) {
 	conn, err := t.dialProxy(ctx, addr)
 	if err != nil {
 		return nil, "", err
@@ -139,6 +220,17 @@ func (t *browserTransport) dialTLS(ctx context.Context, addr string) (net.Conn, 
 		ServerName: host,
 	}, utls.HelloChrome_120)
 
+	if len(http1Only) > 0 && http1Only[0] {
+		if err := tlsConn.BuildHandshakeState(); err != nil {
+			conn.Close()
+			return nil, "", err
+		}
+		for _, extension := range tlsConn.Extensions {
+			if alpn, ok := extension.(*utls.ALPNExtension); ok {
+				alpn.AlpnProtocols = []string{"http/1.1"}
+			}
+		}
+	}
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		conn.Close()
 		return nil, "", err
@@ -166,14 +258,21 @@ func (t *browserTransport) roundTripH2(req *http.Request, conn net.Conn, addr st
 		}
 		// Connection stale — remove and use new one.
 		t.mu.Lock()
-		delete(t.h2Clients, host)
+		if t.h2Clients[host] == cc {
+			delete(t.h2Clients, host)
+		}
 		t.mu.Unlock()
+		cc.Close()
+		if req.Context().Err() != nil || (req.Method != http.MethodGet && req.Method != http.MethodHead) {
+			conn.Close()
+			return nil, err
+		}
 	} else {
 		t.mu.Unlock()
 	}
 
 	// Create new HTTP/2 client connection.
-	tr := &http2.Transport{}
+	tr := &http2.Transport{IdleConnTimeout: 90 * time.Second}
 	cc, err := tr.NewClientConn(conn)
 	if err != nil {
 		conn.Close()
@@ -191,7 +290,9 @@ func (t *browserTransport) roundTripH1(req *http.Request, conn net.Conn) (*http.
 	// The pre-established conn can't be easily injected into http.Transport,
 	// so we close it and re-dial via DialTLSContext — this preserves both
 	// proxy routing and the uTLS Chrome fingerprint for H1 connections.
-	conn.Close()
+	if conn != nil {
+		conn.Close()
+	}
 
 	t.mu.Lock()
 	if t.h1 == nil {
@@ -201,7 +302,7 @@ func (t *browserTransport) roundTripH1(req *http.Request, conn net.Conn) (*http.
 			IdleConnTimeout:     90 * time.Second,
 			MaxIdleConnsPerHost: 10,
 			DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				tlsConn, _, err := self.dialTLS(ctx, addr)
+				tlsConn, _, err := self.dialTLS(ctx, addr, true)
 				return tlsConn, err
 			},
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/httpx"
 )
 
@@ -153,7 +154,7 @@ func (s *settingsStore) load() {
 func (s *settingsStore) get() Settings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cur
+	return cloneSettings(s.cur)
 }
 
 func (s *settingsStore) save(in Settings) (Settings, error) {
@@ -163,25 +164,31 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 	if in.Container != "mp4" {
 		in.Container = "mkv"
 	}
-	s.cur = in
+	in = cloneSettings(in)
 	if s.path == "" {
-		return s.cur, nil
+		s.cur = in
+		return cloneSettings(s.cur), nil
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return s.cur, err
+		return cloneSettings(s.cur), err
 	}
 	data, err := json.MarshalIndent(in, "", "  ")
 	if err != nil {
-		return s.cur, err
+		return cloneSettings(s.cur), err
 	}
-	return s.cur, os.WriteFile(s.path, data, 0o644)
+	if err := fsutil.AtomicWrite(s.path, data, 0600); err != nil {
+		return cloneSettings(s.cur), err
+	}
+	s.cur = in
+	return cloneSettings(s.cur), nil
 }
 
 // AudioSpecDTO is one exact audio-track selection rule sent by the GUI picker:
 // keep a track that contains every Require token and none of the Forbid tokens.
 type AudioSpecDTO struct {
-	Require []string `json:"require"`
-	Forbid  []string `json:"forbid"`
+	Require []string            `json:"require"`
+	Forbid  []string            `json:"forbid"`
+	Source  *domain.AudioSource `json:"source,omitempty"`
 }
 
 // RunRequest is the JSON body the UI sends to start a download or run a preview.
@@ -245,10 +252,10 @@ func buildRunConfig(req RunRequest) (domain.RunConfig, error) {
 	}
 	// An exact picker selection supersedes the substring filter.
 	for _, s := range req.AudioSpecs {
-		if len(s.Require) == 0 {
+		if len(s.Require) == 0 && s.Source == nil {
 			continue
 		}
-		audioPref.Specs = append(audioPref.Specs, domain.AudioSpec{Require: s.Require, Forbid: s.Forbid})
+		audioPref.Specs = append(audioPref.Specs, domain.AudioSpec{Require: s.Require, Forbid: s.Forbid, Source: s.Source})
 	}
 
 	ua := strings.TrimSpace(req.UserAgent)
@@ -341,4 +348,9 @@ func splitShellArgs(s string) []string {
 	}
 	flush()
 	return args
+}
+
+func cloneSettings(s Settings) Settings {
+	s.LibraryDirs = append([]string(nil), s.LibraryDirs...)
+	return s
 }

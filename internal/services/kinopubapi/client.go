@@ -82,7 +82,7 @@ func WithPersist(fn func(Tokens)) Option {
 }
 
 // WithDebug registers a logger that receives a one-line summary of every OAuth
-// response (status + truncated body), for diagnosing the device-login flow.
+// response (status and size), for diagnosing the device-login flow.
 func WithDebug(fn func(string)) Option {
 	return func(c *Client) { c.debug = fn }
 }
@@ -273,17 +273,17 @@ func (c *Client) oauth(ctx context.Context, path string, vals url.Values, out an
 	reqURL := c.host + path + "?" + vals.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, nil)
 	if err != nil {
-		return 0, err
+		return 0, safeRequestError(err)
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("kino.watch auth request: %w", err)
+		return 0, fmt.Errorf("kino.watch auth request: %w", safeRequestError(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if c.debug != nil {
-		c.debug(fmt.Sprintf("POST %s?%s -> HTTP %d: %s", path, grantOf(vals), resp.StatusCode, snippet(body)))
+		c.debug(fmt.Sprintf("POST %s?%s -> HTTP %d (%d bytes)", path, grantOf(vals), resp.StatusCode, len(body)))
 	}
 	if jerr := json.Unmarshal(body, out); jerr != nil {
 		return resp.StatusCode, fmt.Errorf("kino.watch auth: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
@@ -424,16 +424,26 @@ func (c *Client) fetch(ctx context.Context, reqURL string) (int, []byte, error) 
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, safeRequestError(err)
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, safeRequestError(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	return resp.StatusCode, body, nil
+}
+
+// net/http embeds the full request URL, including OAuth query parameters, in
+// transport errors. Keep the underlying cause for retries without exposing it.
+func safeRequestError(err error) error {
+	var requestErr *url.Error
+	if errors.As(err, &requestErr) {
+		return fmt.Errorf("%s: %w", requestErr.Op, safeRequestError(requestErr.Err))
+	}
+	return err
 }
 
 func snippet(b []byte) string {

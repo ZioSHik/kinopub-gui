@@ -120,6 +120,29 @@ func TestReadLibraryState(t *testing.T) {
 	}
 }
 
+func TestReadLibraryStateDoesNotTreatEmptyFilesOrDirectoriesAsDownloaded(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "empty.mkv"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "directory.mkv"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeStateFile(t, dir, domain.DownloadState{Series: "42", Completed: map[string]domain.CompletedRec{
+		"S1E1": {Season: 1, Episode: 1, Path: "empty.mkv", Bytes: 100},
+		"S1E2": {Season: 1, Episode: 2, Path: "directory.mkv", Bytes: 100},
+	}})
+	got, ok := readLibraryState(filepath.Join(dir, stateFileName))
+	if !ok || len(got.Episodes) != 2 || got.TotalBytes != 0 {
+		t.Fatalf("missing-file history should remain visible without claiming disk usage: %+v", got)
+	}
+	for _, ep := range got.Episodes {
+		if ep.Exists {
+			t.Errorf("unusable output must be offered for downloading again: %+v", ep)
+		}
+	}
+}
+
 func TestReadLibraryState_TitleFallsBackToDirName(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "FolderName")
@@ -231,7 +254,8 @@ func TestResolveLibraryDir(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected ok, got %v", err)
 		}
-		if abs != filepath.Clean(good) {
+		expected, _ := filepath.EvalSymlinks(good)
+		if abs != expected {
 			t.Errorf("abs = %q, want %q", abs, good)
 		}
 	})

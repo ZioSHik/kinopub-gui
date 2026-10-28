@@ -1,9 +1,27 @@
-import type { JobStatus, JobView } from "../api";
+import type { AudioSpec, JobStatus, JobView } from "../api";
 
-// What is already lined up for a title. Queueing the same episode twice
-// downloads the same bytes into the same file, so both the card and the server
-// (see queueCoverage in internal/gui/jobs.go) refuse the duplicate — this module
-// is the browser half of that rule.
+export interface QueueRendition {
+  quality: string;
+  container?: string;
+  audioSpecs?: AudioSpec[];
+  audioInclude?: string[];
+  audioExclude?: string[];
+}
+
+function tokens(values?: string[] | null): string[] {
+  return [...new Set((values || []).map((v) => v.trim().toLowerCase()).filter(Boolean))].sort();
+}
+
+export function renditionKey(selection: QueueRendition): string {
+  const specs = (selection.audioSpecs || []).map((s) => JSON.stringify({
+    ...s, require: tokens(s.require), forbid: tokens(s.forbid),
+  })).sort();
+  return JSON.stringify([selection.quality || "optimal", selection.container || "mkv", specs,
+    specs.length ? [] : tokens(selection.audioInclude), specs.length ? [] : tokens(selection.audioExclude)]);
+}
+
+// What is already lined up for the selected rendition. Another voiceover,
+// quality or container is additional work; only an identical request is locked.
 
 // A job holds a claim on its episodes while it still has work ahead of it.
 // A failed job does not: its card offers a Retry, and starting the title over is
@@ -44,9 +62,9 @@ export interface QueueCoverage {
 // covers the title as a whole, which is deliberately the conservative answer.
 //
 // outputPath, when given, scopes the answer to jobs downloading into that
-// folder — the server's rule keys on URL+folder, and a job filling a different
-// folder does not collide with this one.
-export function queueCoverage(jobs: JobView[], itemId: string, outputPath?: string): QueueCoverage {
+// folder. The selection scopes coverage to the requested video/audio variant,
+// matching the server's duplicate guard.
+export function queueCoverage(jobs: JobView[], itemId: string, outputPath?: string, selection?: QueueRendition): QueueCoverage {
   const refs = new Set<string>();
   let whole = false;
   if (!itemId) return { refs, whole };
@@ -55,6 +73,7 @@ export function queueCoverage(jobs: JobView[], itemId: string, outputPath?: stri
     if (j.dryRun) continue; // a preview run produces no files
     if (itemIdFromURL(j.url) !== itemId) continue;
     if (outputPath && j.outputPath && j.outputPath !== outputPath) continue;
+    if (selection && renditionKey(j) !== renditionKey(selection)) continue;
     if (j.episodes.length > 0) {
       for (const e of j.episodes) {
         if (e.state === "failed") continue;

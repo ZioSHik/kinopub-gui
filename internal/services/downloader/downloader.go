@@ -195,6 +195,52 @@ func (d *Downloader) remuxLocal(ctx context.Context, job domain.Job, rawPath str
 // from separate files; this maps them all together with -c copy and applies
 // per-track labels/languages.
 func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLSDownloadResult) error {
+	if hls.PreserveExisting {
+		streams, err := d.existingStreams(ctx, hls.VideoPath)
+		if err != nil {
+			return err
+		}
+		copy := *hls
+		copy.ExistingAudioCount = 0
+		copy.ExistingAttachmentCount = 0
+		copy.ExistingCovers = nil
+		var coverDir string
+		for _, stream := range streams {
+			if stream.CodecType == "audio" {
+				copy.ExistingAudioCount++
+			}
+			if stream.CodecType == "attachment" {
+				copy.ExistingAttachmentCount++
+			}
+			if !strings.EqualFold(filepath.Ext(job.OutPath), ".mkv") || stream.Disposition.AttachedPic == 0 {
+				continue
+			}
+			if coverDir == "" {
+				coverDir, err = os.MkdirTemp(filepath.Dir(job.OutPath), ".preserve-covers-*")
+				if err != nil {
+					return fmt.Errorf("create cover staging directory: %w", err)
+				}
+				defer os.RemoveAll(coverDir)
+			}
+			path := filepath.Join(coverDir, fmt.Sprintf("cover-%d", stream.Index))
+			args := []string{"-v", "error", "-nostdin", "-y", "-i", hls.VideoPath, "-map", fmt.Sprintf("0:%d", stream.Index), "-c", "copy", "-frames:v", "1", "-f", "image2", path}
+			if err := d.run(ctx, d.ffmpegPath, args, nil, nil); err != nil {
+				return fmt.Errorf("preserve embedded cover: %w", err)
+			}
+			mime, filename := stream.Tags["mimetype"], stream.Tags["filename"]
+			if mime == "" {
+				mime = "image/" + stream.CodecName
+				if stream.CodecName == "mjpeg" {
+					mime = "image/jpeg"
+				}
+			}
+			if filename == "" {
+				filename = fmt.Sprintf("cover-%d", stream.Index)
+			}
+			copy.ExistingCovers = append(copy.ExistingCovers, domain.HLSCover{Path: path, Filename: filename, MIMEType: mime})
+		}
+		hls = &copy
+	}
 	for _, sub := range hls.SubtitleTracks {
 		if sub.TimestampOffset == nil {
 			continue
@@ -241,15 +287,7 @@ func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLS
 // hlsVideoStart reads the same input start timestamp ffmpeg subtracts during
 // muxing. ffprobe is installed alongside ffmpeg by the managed tool installer.
 func (d *Downloader) hlsVideoStart(ctx context.Context, path string) (time.Duration, error) {
-	probe := "ffprobe"
-	if strings.EqualFold(filepath.Ext(d.ffmpegPath), ".exe") {
-		probe += ".exe"
-	}
-	if dir := filepath.Dir(d.ffmpegPath); dir != "." {
-		if sibling := filepath.Join(dir, probe); fileExists(sibling) {
-			probe = sibling
-		}
-	}
+	probe := d.probePath()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var output bytes.Buffer
@@ -432,3 +470,42 @@ func estimateDuration(job domain.Job) time.Duration {
 type noopSink struct{}
 
 func (noopSink) TrackProgress(_ domain.EpisodeKey, _ domain.TrackRef, _ int) {}
+
+func (d *Downloader) probePath() string {
+	probe := "ffprobe"
+	if strings.EqualFold(filepath.Ext(d.ffmpegPath), ".exe") {
+		probe += ".exe"
+	}
+	if dir := filepath.Dir(d.ffmpegPath); dir != "." {
+		if sibling := filepath.Join(dir, probe); fileExists(sibling) {
+			probe = sibling
+		}
+	}
+	return probe
+}
+
+type existingStream struct {
+	Index       int               `json:"index"`
+	CodecType   string            `json:"codec_type"`
+	CodecName   string            `json:"codec_name"`
+	Tags        map[string]string `json:"tags"`
+	Disposition struct {
+		AttachedPic int `json:"attached_pic"`
+	} `json:"disposition"`
+}
+
+func (d *Downloader) existingStreams(ctx context.Context, path string) ([]existingStream, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	if err := d.run(ctx, d.probePath(), []string{"-v", "error", "-show_entries", "stream=index,codec_type,codec_name:stream_disposition=attached_pic:stream_tags=filename,mimetype", "-of", "json", path}, nil, &output); err != nil {
+		return nil, fmt.Errorf("probe existing streams: %w", err)
+	}
+	var result struct {
+		Streams []existingStream `json:"streams"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		return nil, fmt.Errorf("parse existing streams: %w", err)
+	}
+	return result.Streams, nil
+}

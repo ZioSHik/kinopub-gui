@@ -221,3 +221,12 @@ describe("completedSignal", () => {
     expect(completedSignal(jobs)).toBe(3); // one episode + (job + its episode)
   });
 });
+
+it("only locks the rendition currently selected, independent of audio token order", () => {
+  const selection = {quality: "1080p",container: "mkv",audioSpecs: [{require: ["Studio", "ac3"],forbid: ["commentar", "комментар"]}]};
+  const queued = job({...selection,audioSpecs: [{require: ["ac3", "Studio"],forbid: ["комментар", "commentar"]}]});
+  expect(queueCoverage([queued], "409", "/downloads", selection).whole).toBe(true);
+  expect(queueCoverage([queued], "409", "/downloads", {...selection,quality: "720p"}).whole).toBe(false);
+  expect(queueCoverage([queued], "409", "/downloads", {...selection,container: "mp4"}).whole).toBe(false);
+  expect(queueCoverage([queued], "409", "/downloads", {...selection,audioSpecs: [{require: ["Other studio"],forbid: []}]}).whole).toBe(false);
+});

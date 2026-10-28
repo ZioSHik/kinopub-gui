@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   CalendarDays,
@@ -31,17 +31,18 @@ import { useI18n } from "../i18n";
 import { pushRoute } from "../router";
 import {
   audioIdentity,
-  isTaggedCodec,
-  matchDownloadedAudio,
+  audioSelectionSpecs,
   matchRememberedAudio,
   readAudioPref,
-  TAGGED_CODECS,
   writeAudioPref,
 } from "../lib/audio";
-import { initialEpisodeSelection, isQueued, nothingLeftToQueue, queueCoverage } from "../lib/queue";
+import { voiceoverLabels } from "../lib/libraryAudio";
+import { existingDownloads, matchesDownload, preferredRecordedAudio } from "../lib/downloaded";
+import { completedSignal, initialEpisodeSelection, isQueued, itemIdFromURL, nothingLeftToQueue, queueCoverage } from "../lib/queue";
 import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
 import { Player } from "./Player";
+import { AudioPicker } from "./AudioPicker";
 
 const QUALITIES = ["", "2160p", "1080p", "720p", "480p", "360p"];
 
@@ -62,7 +63,7 @@ function epKey(season: number, episode: number) {
 // resolution and voiceover — and flags the voiceover as a substitute when the
 // requested one wasn't offered for that episode.
 function downloadedHint(ep: DownloadedEpisode, t: (k: string, v?: Record<string, string | number>) => string): string {
-  const bits = [ep.resolution, (ep.audio || []).join(", ")].filter(Boolean) as string[];
+  const bits = [ep.resolution, voiceoverLabels(ep.audio).join(", ")].filter(Boolean) as string[];
   const base = bits.length ? t("Downloaded · {details}", { details: bits.join(" · ") }) : t("Downloaded");
   return ep.audioFallback ? `${base} — ${t("voiceover substituted")}` : base;
 }
@@ -85,17 +86,29 @@ export function TitleDetail({
   const [similar, setSimilar] = useState<DiscoverItem[]>([]);
 
   const [quality, setQuality] = useState(settings.quality);
-  // Selected озвучка labels. Empty set → keep every track.
+  // Selected voiceover labels. An empty selection waits for an explicit choice.
   const [audioSel, setAudioSel] = useState<Set<string>>(new Set());
   // True when a remembered voiceover existed but isn't available here, so the
   // user is prompted to pick another.
   const [audioPrefMissing, setAudioPrefMissing] = useState(false);
   // Episodes of this title already on disk, keyed by episode key. Carries what
   // each one was downloaded in — resolution and voiceover.
-  const [downloaded, setDownloaded] = useState<Map<string, DownloadedEpisode>>(new Map());
+  const [downloadedFiles, setDownloadedFiles] = useState<DownloadedEpisode[]>([]);
+  const matchingDownloads = useMemo(() => {
+    // Until a voiceover is chosen, only the video tier determines what is
+    // already on disk. Empty audio must not mark existing episodes as missing.
+    const audios = audioSel.size ? detail?.audios || [] : [];
+    return new Map(downloadedFiles
+      .filter((file) => matchesDownload(file, quality, settings.container, audios, audioSel))
+      .map((file) => [file.key, file]));
+  }, [downloadedFiles, quality, settings.container, detail, audioSel]);
+  const downloaded = useMemo(() => existingDownloads(downloadedFiles), [downloadedFiles]);
+  const selectionVersion = useRef("");
   // Whether the on-disk scan has answered. The episode selection waits for it:
   // seeding before it lands would tick episodes that are already downloaded.
   const [downloadedReady, setDownloadedReady] = useState(false);
+  const completedCount = completedSignal(jobs.filter((job) => itemIdFromURL(job.url) === id));
+  const observedCompletions = useRef(completedCount);
   // Selected episode keys (serials). null until detail loads.
   const [epSel, setEpSel] = useState<Set<string> | null>(null);
   // Whether the episode and voiceover selections have been seeded for this
@@ -117,7 +130,8 @@ export function TitleDetail({
     setSeeded(false);
     setAudioSel(new Set());
     setAudioPrefMissing(false);
-    setDownloaded(new Map());
+    setDownloadedFiles([]);
+    selectionVersion.current = "";
     setDownloadedReady(false);
     setPlotOpen(false);
     api
@@ -143,7 +157,7 @@ export function TitleDetail({
       .then((r) => alive && setSimilar(r.items || []))
       .catch(() => {});
     api
-      .libraryDownloaded(id)
+      .libraryDownloaded(id, settings.outputPath)
       .then(
         (r) =>
           alive &&
@@ -152,24 +166,41 @@ export function TitleDetail({
           // missing"), and counting it as downloaded removed the only way to
           // re-download it: the button read "Already downloaded — open" and the
           // episode dropped out of both the seeded selection and "Only missing".
-          setDownloaded(new Map((r.episodes || []).filter((e) => e.exists).map((e) => [e.key, e]))),
+          setDownloadedFiles((r.episodes || []).filter((e) => e.exists)),
       )
       .catch(() => {}) // a failed scan just means nothing is known to be on disk
       .finally(() => alive && setDownloadedReady(true));
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, settings.outputPath]);
+
+  // A title can stay open while its queue runs. Refresh the inventory when an
+  // episode lands, otherwise the card keeps yesterday's quality/audio coverage.
+  useEffect(() => {
+    if (!downloadedReady) return;
+    const previous = observedCompletions.current;
+    observedCompletions.current = completedCount;
+    if (completedCount <= previous) return;
+    let alive = true;
+    api.libraryDownloaded(id, settings.outputPath)
+      .then((result) => { if (alive) setDownloadedFiles((result.episodes || []).filter((file) => file.exists)); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [id, settings.outputPath, completedCount, downloadedReady]);
 
   // What the queue already holds for this title. Read straight off the live job
   // list, so it is true the moment a job is submitted and stays true for as long
   // as that job has work left — no timers, no local "I just clicked it" flag that
   // could disagree with reality.
-  // Scoped to the folder this card would download into: a job filling a
-  // different folder is a different download by the server's own rule.
+  // Scoped to this folder and the selected rendition: another voiceover or
+  // quality can still be added while the original request is queued.
   const coverage = useMemo(
-    () => queueCoverage(jobs, id, settings.outputPath),
-    [jobs, id, settings.outputPath],
+    () => queueCoverage(jobs, id, settings.outputPath, {
+      quality, container: settings.container,
+      audioSpecs: audioSelectionSpecs((detail?.audios || []).filter((a) => audioSel.has(a.label))),
+    }),
+    [jobs, id, settings.outputPath, quality, settings.container, detail, audioSel],
   );
 
   // The same thing in this card's own key format, so it compares directly
@@ -212,14 +243,14 @@ export function TitleDetail({
   useEffect(() => {
     if (!detail || !downloadedReady || seeded) return;
     setSeeded(true);
-    setEpSel(initialEpisodeSelection(allEpKeys, downloaded, queuedKeys));
+    setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
 
     if (!detail.audios.length) return;
     // What to pre-tick, most truthful source first: the voiceover the episodes on
     // disk are actually in, then this title's own remembered choice, then the
     // last choice made anywhere as a mere starting guess.
-    const onDisk = [...downloaded.values()].flatMap((e) => e.audio || []);
-    const fromDisk = matchDownloadedAudio(detail.audios, onDisk);
+    const onDisk = downloadedFiles.flatMap((e) => e.audio || []);
+    const fromDisk = preferredRecordedAudio(detail.audios, downloadedFiles);
     const remembered = readAudioPref(id);
     const matched = fromDisk.length ? fromDisk : matchRememberedAudio(detail.audios, remembered.prefs);
 
@@ -237,7 +268,17 @@ export function TitleDetail({
     // was what put the message on titles the user had never touched.
     setAudioSel(new Set());
     setAudioPrefMissing(onDisk.length > 0 || (remembered.scoped && remembered.prefs.length > 0));
-  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, queuedKeys, id]);
+  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, matchingDownloads, downloadedFiles, queuedKeys, id]);
+
+  // A changed quality or voiceover needs a fresh missing-episode selection.
+  // Keep manual episode choices while this selection remains unchanged.
+  useEffect(() => {
+    if (!seeded || !downloadedReady) return;
+    const signature = JSON.stringify([id, quality, settings.container, [...audioSel].sort()]);
+    if (selectionVersion.current === signature) return;
+    selectionVersion.current = signature;
+    setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
+  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, matchingDownloads, queuedKeys]);
 
   const toggleAudio = (label: string) =>
     setAudioSel((cur) => {
@@ -246,6 +287,7 @@ export function TitleDetail({
       return next;
     });
 
+  const needsAudio = !!detail?.audios.length && audioSel.size === 0;
   const allAudioOn = !!detail && detail.audios.length > 0 && audioSel.size === detail.audios.length;
   const toggleAllAudio = () =>
     setAudioSel(() => (allAudioOn ? new Set() : new Set((detail?.audios || []).map((a) => a.label))));
@@ -286,8 +328,8 @@ export function TitleDetail({
   // finishes instantly having done nothing. The button stops offering to start
   // anything and points at the page holding the answer to "where is it then?".
   const nothingLeft = isSerial
-    ? nothingLeftToQueue(allEpKeys, downloaded, queuedKeys)
-    : coverage.whole || coverage.refs.size > 0 || downloaded.size > 0;
+    ? nothingLeftToQueue(allEpKeys, matchingDownloads, queuedKeys)
+    : coverage.whole || coverage.refs.size > 0 || matchingDownloads.size > 0;
   // Which of the two it is, so the button can say the true one.
   const queuedSomething = isSerial ? queuedCount > 0 : coverage.whole || coverage.refs.size > 0;
 
@@ -324,25 +366,10 @@ export function TitleDetail({
       toast(t("Select at least one voiceover"), "error");
       return;
     }
-    // When every track is selected, send no filter (keep all). Otherwise build an
-    // exact per-track spec so the chosen variant is matched precisely — separating
-    // a plain dub from its AC3 sibling (same studio name). The discriminator is
-    // the CODEC: tagged codecs (AC3/DTS/…) appear verbatim in the HLS track name,
-    // so the entry REQUIRES that token; a plain (AAC/MP3) entry instead FORBIDS the
-    // tagged tokens so it doesn't also match its AC3 sibling.
-    // The token list lives in lib/audio.ts, shared with the rules that decide
-    // which entries are pre-ticked — keeping a second copy here is how the two
-    // drifted apart and one studio's AAC and AC3 renditions both got selected.
-    const isTagged = isTaggedCodec;
-    const allSelected = chosenAudios.length === detail.audios.length;
-    const audioSpecs =
-      allSelected || chosenAudios.length === 0
-        ? undefined
-        : chosenAudios.map((a) => {
-            const require = [a.filter].filter(Boolean);
-            if (isTagged(a) && a.codec) require.push(a.codec);
-            return { require, forbid: isTagged(a) ? [] : TAGGED_CODECS };
-          });
+    // Keep the picker selection explicit even when all listed tracks are
+    // checked: the catalog can omit extra HLS tracks such as commentary.
+    const audioSpecs = chosenAudios.length ? audioSelectionSpecs(chosenAudios) : undefined;
+
     // Remember this voiceover choice for the next title/season. Stored by studio
     // identity, the same thing the specs above match on — remembering the whole
     // label made the next title claim the voiceover was unavailable whenever
@@ -561,26 +588,7 @@ export function TitleDetail({
                     {t("Voiceover list appears after sign-in / for available titles.")}
                   </p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {detail.audios.map((a) => {
-                      const on = audioSel.has(a.label);
-                      return (
-                        <button
-                          key={a.label}
-                          onClick={() => toggleAudio(a.label)}
-                          className={clsx(
-                            "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                            on
-                              ? "border-gold-500/50 bg-gold-500/[0.14] text-gold-200"
-                              : "border-white/[0.08] bg-white/[0.02] text-slate-400 hover:border-white/20 hover:text-slate-200",
-                          )}
-                        >
-                          {on && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
-                          {a.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <AudioPicker audios={detail.audios} selected={audioSel} onToggle={toggleAudio} />
                 )}
               </Section>
 
@@ -595,9 +603,9 @@ export function TitleDetail({
                       {downloaded.size > 0 && (
                         <button
                           className="text-slate-400 transition hover:text-sky-300"
-                          title={t("Select only episodes not yet downloaded")}
+                          title={t("Select episodes missing the selected quality or voiceover")}
                           onClick={() =>
-                            setEpSel(new Set(allEpKeys.filter((k) => !downloaded.has(k) && !queuedKeys.has(k))))
+                            setEpSel(new Set(allEpKeys.filter((k) => !matchingDownloads.has(k) && !queuedKeys.has(k))))
                           }
                         >
                           {t("Only missing")}
@@ -618,6 +626,13 @@ export function TitleDetail({
                     </>
                   }
                 >
+                  {!needsAudio && downloaded.size > 0 && matchingDownloads.size !== downloaded.size && (
+                    <p className="mb-2 text-xs text-slate-400">
+                      {t("{n} of {m} downloaded episodes match the selected quality and voiceover", {
+                        n: matchingDownloads.size, m: downloaded.size,
+                      })}
+                    </p>
+                  )}
                   <div className="space-y-2">
                     {detail.seasons!.map((s) => {
                       const open = openSeasons.has(s.number);
@@ -706,7 +721,7 @@ export function TitleDetail({
                               {s.episodes.map((e) => {
                                 const key = epKey(e.season, e.episode);
                                 const on = epSel.has(key);
-                                const have = downloaded.get(key);
+                                const have = matchingDownloads.get(key) || downloaded.get(key);
                                 const dl = !!have;
                                 const qed = queuedKeys.has(key);
                                 return (
@@ -724,6 +739,7 @@ export function TitleDetail({
                                     <button
                                       onClick={() => toggleEpisode(key)}
                                       disabled={qed}
+                                      aria-pressed={on}
                                       title={qed ? t("In the queue") : e.watched ? t("Watched") : undefined}
                                       className="flex flex-1 items-center gap-2.5 px-3 py-2 text-left disabled:cursor-default"
                                     >
@@ -741,7 +757,13 @@ export function TitleDetail({
                                           e.watched ? "text-slate-500" : on ? "text-slate-100" : "text-slate-400",
                                         )}
                                       >
-                                        {e.title}
+                                        <span className="block truncate">{e.title}</span>
+                                        {have && (
+                                          <span className="mt-0.5 block truncate text-[11px] font-normal text-sky-300/70"
+                                            title={downloadedHint(have, t)}>
+                                            {[have.resolution, voiceoverLabels(have.audio).join(", ") || t("Voiceover not recorded")].filter(Boolean).join(" · ")}
+                                          </span>
+                                        )}
                                       </span>
                                       {qed && (
                                         <span className="shrink-0 text-emerald-400/90" title={t("In the queue")}>
@@ -830,7 +852,12 @@ export function TitleDetail({
                     </option>
                   ))}
                 </select>
-                {nothingLeft ? (
+                {needsAudio ? (
+                  <button className="btn-primary" disabled>
+                    <Mic2 className="h-4 w-4" />
+                    {t("Choose a voiceover")}
+                  </button>
+                ) : nothingLeft ? (
                   <button
                     className="btn border border-emerald-500/40 bg-emerald-500/[0.16] text-emerald-200 hover:bg-emerald-500/[0.24]"
                     onClick={openQueue}

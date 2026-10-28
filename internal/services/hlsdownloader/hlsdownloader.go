@@ -217,6 +217,12 @@ func audioRenditionsFor(master *MasterPlaylist, selected Variant) []AudioRenditi
 	return out
 }
 
+// DownloadAudio fetches only selected renditions absent from the existing file.
+func (d *Downloader) DownloadAudio(ctx context.Context, manifestURL string, quality domain.Quality,
+	outPath string, key domain.EpisodeKey, sink domain.ProgressSink, existing []string) (*domain.HLSDownloadResult, error) {
+	return d.downloadSelected(ctx, manifestURL, quality, outPath, key, sink, true, existing)
+}
+
 // downloadEpisodeInternal downloads video segments and (for demuxed HLS) audio
 // segments separately. It returns the local paths so the caller can mux them
 // together with ffmpeg. The caller is responsible for removing result.TempDir.
@@ -228,6 +234,11 @@ func (d *Downloader) downloadEpisodeInternal(
 	key domain.EpisodeKey,
 	sink domain.ProgressSink,
 ) (*domain.HLSDownloadResult, error) {
+	return d.downloadSelected(ctx, manifestURL, quality, outPath, key, sink, false, nil)
+}
+
+func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, quality domain.Quality,
+	outPath string, key domain.EpisodeKey, sink domain.ProgressSink, audioOnly bool, existing []string) (*domain.HLSDownloadResult, error) {
 	epLabel := fmt.Sprintf("S%02dE%02d", key.Season, key.Episode)
 
 	// 1. Fetch and parse master playlist.
@@ -264,6 +275,9 @@ func (d *Downloader) downloadEpisodeInternal(
 	// is matched against rendition names and languages; an empty preference
 	// keeps every track.
 	pref := d.audioPreference()
+	if pref.IsExactSourceSelection() && len(allRenditions) == 0 {
+		return nil, fmt.Errorf("cannot verify requested audio for %s: selected HLS variant exposes no audio renditions", epLabel)
+	}
 	audioRenditions := allRenditions
 	// Set when the requested voiceover is not among this episode's tracks and the
 	// selection fell back to a substitute. Recorded with the episode so the card
@@ -274,15 +288,29 @@ func (d *Downloader) downloadEpisodeInternal(
 		for i, a := range allRenditions {
 			infos[i] = domain.AudioTrackInfo{Index: i, Name: a.Name, Language: a.Language}
 		}
+		domain.AttachAudioSources(infos, pref.EpisodeSources[key])
 		keep, fellBack := domain.SelectAudioResolved(infos, pref)
+		if fellBack && pref.IsExactSourceSelection() {
+			return nil, fmt.Errorf("requested audio rendition is unavailable for %s; refusing to substitute another track", epLabel)
+		}
 		if fellBack && pref.RequiresOriginal() {
 			return nil, fmt.Errorf("requested original soundtrack is unavailable for %s; refusing to substitute another voiceover", epLabel)
+		}
+		if fellBack && pref.RequestsCommentary() {
+			return nil, fmt.Errorf("requested commentary is unavailable for %s; refusing to substitute another soundtrack", epLabel)
+		}
+		if len(keep) == 0 {
+			return nil, fmt.Errorf("no requested audio is available for %s; refusing to substitute commentary", epLabel)
 		}
 		audioFellBack = fellBack
 		filtered := make([]AudioRendition, 0, len(keep))
 		var keptLabels []string
 		for _, idx := range keep {
-			filtered = append(filtered, allRenditions[idx])
+			rendition := allRenditions[idx]
+			if infos[idx].Source != nil && pref.IsExactSourceSelection() {
+				rendition.Name = infos[idx].Source.RecordedName()
+			}
+			filtered = append(filtered, rendition)
 			keptLabels = append(keptLabels, allRenditions[idx].Name)
 		}
 		audioRenditions = filtered
@@ -326,23 +354,50 @@ func (d *Downloader) downloadEpisodeInternal(
 	}
 	var audioJobs []audioJob
 	for i, a := range audioRenditions {
+		if domain.IsGenericOriginalAudio(a.Name, a.Language, pref.OriginalLanguage) {
+			a.Name += " Оригинал Original"
+		}
+		present := false
+		for _, name := range existing {
+			if domain.SameAudioRendition(name, a.Name) {
+				present = true
+				break
+			}
+		}
+		if audioOnly && present {
+			continue
+		}
 		ap, err := FetchMediaPlaylist(ctx, d.client, a.URI, d.auth)
 		if err != nil {
+			kind := "audio"
 			if pref.RequiresOriginal() {
-				return nil, fmt.Errorf("requested original audio playlist %q failed: %w", a.Name, err)
+				kind = "requested original audio"
 			}
-			d.logger.Warn("audio playlist fetch failed, skipping track",
-				domain.F("episode", epLabel),
-				domain.F("audio", a.Name),
-				domain.F("error", err.Error()),
-			)
-			continue
+			return nil, fmt.Errorf("%s playlist %q failed: %w", kind, a.Name, err)
 		}
 		audioJobs = append(audioJobs, audioJob{
 			rendition: a,
 			playlist:  ap,
 			outFile:   filepath.Join(tmpDir, fmt.Sprintf("audio_%d.ts", i)),
 		})
+	}
+
+	if audioOnly {
+		videoPlaylist.Segments = nil
+		videoPlaylist.InitURI = ""
+	}
+	if !audioOnly {
+		if err := prepareTrackCache(filepath.Join(tmpDir, "video"), videoPlaylist); err != nil {
+			return nil, err
+		}
+	}
+	for ai, aj := range audioJobs {
+		if len(aj.playlist.Segments) == 0 {
+			return nil, fmt.Errorf("audio playlist %q has no segments", aj.rendition.Name)
+		}
+		if err := prepareTrackCache(filepath.Join(tmpDir, fmt.Sprintf("audio_%d", ai)), aj.playlist); err != nil {
+			return nil, err
+		}
 	}
 
 	// Total segments across video + all audio for progress.
@@ -593,15 +648,17 @@ func (d *Downloader) downloadEpisodeInternal(
 		}
 	}
 
-	// Video track (index 0).
-	trackWG.Add(1)
-	go func() {
-		defer trackWG.Done()
-		if err := downloadTrack(ctx, 0, videoPlaylist.InitURI, videoPlaylist.Segments, videoDir, videoPath); err != nil {
-			recordErr(fmt.Errorf("video track: %w", err))
-		}
-	}()
+	if !audioOnly {
+		// Video track (index 0).
+		trackWG.Add(1)
+		go func() {
+			defer trackWG.Done()
+			if err := downloadTrack(ctx, 0, videoPlaylist.InitURI, videoPlaylist.Segments, videoDir, videoPath); err != nil {
+				recordErr(fmt.Errorf("video track: %w", err))
+			}
+		}()
 
+	}
 	// Audio tracks (indices 1..N).
 	for ai, aj := range audioJobs {
 		trackWG.Add(1)
@@ -621,17 +678,19 @@ func (d *Downloader) downloadEpisodeInternal(
 	}
 
 	var resultSubtitles []domain.HLSSubtitleTrack
-	trackWG.Add(1)
-	go func() {
-		defer trackWG.Done()
-		tracks, err := d.downloadSubtitleRenditions(ctx, master, selected, tmpDir)
-		if err != nil {
-			recordErr(fmt.Errorf("subtitle tracks: %w", err))
-			return
-		}
-		resultSubtitles = tracks
-	}()
+	if !audioOnly {
+		trackWG.Add(1)
+		go func() {
+			defer trackWG.Done()
+			tracks, err := d.downloadSubtitleRenditions(ctx, master, selected, tmpDir)
+			if err != nil {
+				recordErr(fmt.Errorf("subtitle tracks: %w", err))
+				return
+			}
+			resultSubtitles = tracks
+		}()
 
+	}
 	trackWG.Wait()
 
 	if trackErr != nil {
@@ -768,23 +827,28 @@ func (d *Downloader) fetchSegment(ctx context.Context, segURL, outPath string) (
 		}
 	}
 
-	f, err := os.Create(outPath)
+	f, err := os.CreateTemp(filepath.Dir(outPath), ".segment-*")
 	if err != nil {
 		return 0, err
 	}
 
+	tempPath := f.Name()
+	defer os.Remove(tempPath)
 	n, copyErr := io.Copy(f, resp.Body)
 	closeErr := f.Close()
 
 	if copyErr != nil {
-		os.Remove(outPath)
 		return 0, copyErr
 	}
 	if closeErr != nil {
-		os.Remove(outPath)
 		return 0, closeErr
 	}
-
+	if n == 0 {
+		return 0, fmt.Errorf("empty segment")
+	}
+	if err := os.Rename(tempPath, outPath); err != nil {
+		return 0, err
+	}
 	return n, nil
 }
 

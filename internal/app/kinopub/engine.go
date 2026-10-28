@@ -121,6 +121,10 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 		return domain.RunResult{}, err
 	}
 
+	if len(playlist.OriginalLanguages) == 1 {
+		cfg.AudioPref.OriginalLanguage = playlist.OriginalLanguages[0]
+	}
+
 	// 4. Filter episodes.
 	allMatching := e.matchingEpisodes(series, cfg)
 	selected := e.filterCompleted(allMatching, state, cfg)
@@ -214,11 +218,13 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	// and let the user choose. The resulting preference is pushed to the HLS
 	// downloader for all episodes. This runs before progress rendering so the
 	// interactive prompt isn't clobbered by progress redraws.
-	if len(playlist.OriginalLanguages) == 1 {
-		cfg.AudioPref.OriginalLanguage = playlist.OriginalLanguages[0]
-	}
 	pref := e.resolveAudioPreference(ctx, cfg, selected, manifestMap)
+	pref.EpisodeSources = make(map[domain.EpisodeKey][]domain.AudioSource)
+	for _, pe := range playlist.Episodes {
+		pref.EpisodeSources[domain.EpisodeKey{Series: series.ID, Season: pe.Season, Episode: pe.Episode}] = pe.AudioSources
+	}
 	e.deps.HLSDownloader.SetAudioPreference(pref)
+	cfg.AudioPref = pref
 
 	// 8. Start progress reporting.
 	planned := make([]domain.PlannedEpisode, 0, len(selected))
@@ -275,6 +281,9 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 	dropCanceledTemp := func(ep domain.Episode) {
 		if outPath, err := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, ep); err == nil {
 			os.RemoveAll(outPath + ".ts.hls-tmp")
+		}
+		if existing, ok := matchingCompletedVideo(state, ep.Key, cfg); ok {
+			os.RemoveAll(existing.Path + ".ts.hls-tmp")
 		}
 	}
 	// epInfo lets the live-retry control reconstruct a pending unit for any
@@ -419,9 +428,7 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				// was preserved across retries for resume (unless the run is being
 				// paused, where partial data is kept for a later resume).
 				if e.deps.Paused == nil || !e.deps.Paused() {
-					if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
-						os.RemoveAll(outPath + ".ts.hls-tmp")
-					}
+					dropCanceledTemp(pe.ep)
 				}
 				mu.Lock()
 				failed++
@@ -827,9 +834,7 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				err = ctx.Err()
 			}
 			outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
-			if outPath, pathErr := e.deps.OutputLayout.EpisodePath(cfg.OutputPath, series, pe.ep); pathErr == nil {
-				os.RemoveAll(outPath + ".ts.hls-tmp")
-			}
+			dropCanceledTemp(pe.ep)
 		}
 	}
 	sweep(retryQueue) // in-flight episodes re-parked here on stop
@@ -976,6 +981,17 @@ func (e *engine) attemptHLSEpisode(
 	if err != nil {
 		return epFatal, fmt.Errorf("output path: %w", err)
 	}
+	// Reuse a matching on-disk rendition for audio additions and explicit retries.
+	state, loadErr := e.deps.StateStore.Load(ctx, series.ID)
+	if loadErr != nil {
+		return epFatal, fmt.Errorf("load completion state: %w", loadErr)
+	}
+	existing, hasExisting := matchingCompletedVideo(state, ep.Key, cfg)
+	if hasExisting {
+		outPath = existing.Path
+	}
+	augment := hasExisting && !cfg.ForceRedownload
+
 	if err := e.deps.OutputLayout.EnsureDirs(outPath); err != nil {
 		return epFatal, fmt.Errorf("create directory: %w", err)
 	}
@@ -983,7 +999,17 @@ func (e *engine) attemptHLSEpisode(
 	e.deps.ProgressReporter.EpisodeStarted(ep.Key)
 
 	tsPath := outPath + ".ts"
-	hlsResult, dlErr := e.deps.HLSDownloader.DownloadEpisode(ctx, manifestURL, cfg.Quality, tsPath, ep.Key, e.deps.ProgressReporter)
+	var hlsResult *domain.HLSDownloadResult
+	var dlErr error
+	if augment {
+		audioDownloader, ok := e.deps.HLSDownloader.(domain.HLSAudioDownloader)
+		if !ok {
+			return epFatal, fmt.Errorf("downloader does not support adding audio to an existing file")
+		}
+		hlsResult, dlErr = audioDownloader.DownloadAudio(ctx, manifestURL, cfg.Quality, tsPath, ep.Key, e.deps.ProgressReporter, existing.Audio)
+	} else {
+		hlsResult, dlErr = e.deps.HLSDownloader.DownloadEpisode(ctx, manifestURL, cfg.Quality, tsPath, ep.Key, e.deps.ProgressReporter)
+	}
 	if dlErr != nil {
 		if ctx.Err() != nil {
 			return epRetryable, dlErr
@@ -998,7 +1024,7 @@ func (e *engine) attemptHLSEpisode(
 		return epFatal, dlErr
 	}
 
-	if len(ep.Subtitles) > 0 && len(hlsResult.SubtitleTracks) == 0 {
+	if !augment && len(ep.Subtitles) > 0 && len(hlsResult.SubtitleTracks) == 0 {
 		subtitles, ok := e.deps.HLSDownloader.(domain.SubtitleDownloader)
 		if !ok {
 			os.RemoveAll(hlsResult.TempDir)
@@ -1013,6 +1039,16 @@ func (e *engine) attemptHLSEpisode(
 			return epFatal, err
 		}
 		hlsResult.SubtitleTracks = tracks
+	}
+
+	if augment {
+		hlsResult.VideoPath = existing.Path
+		hlsResult.PreserveExisting = true
+		hlsResult.Resolution = existing.Resolution
+		hlsResult.BitrateKbps = existing.BitRate
+		if _, codec, ok := strings.Cut(existing.Quality, "/"); ok {
+			hlsResult.Codec = codec
+		}
 	}
 
 	// Mux downloaded video, audio and subtitles into the final container.
@@ -1031,7 +1067,9 @@ func (e *engine) attemptHLSEpisode(
 	}
 
 	var remuxErr error
-	if muxer, ok := e.deps.Downloader.(domain.HLSMuxer); ok {
+	if augment && len(hlsResult.AudioTracks) == 0 {
+		// Selection is already present; only refresh its coverage metadata.
+	} else if muxer, ok := e.deps.Downloader.(domain.HLSMuxer); ok {
 		remuxErr = muxer.MuxHLS(ctx, muxJob, hlsResult)
 	} else {
 		remuxErr = fmt.Errorf("downloader does not support HLS muxing")
@@ -1057,21 +1095,36 @@ func (e *engine) attemptHLSEpisode(
 		fileSize = info.Size()
 	}
 	completedInfo := domain.CompletedInfo{
-		Key:        ep.Key,
-		Path:       outPath,
-		Bytes:      fileSize,
-		Title:      ep.Title,
-		Quality:    fmt.Sprintf("%s/%s", hlsResult.Resolution, hlsResult.Codec),
-		Resolution: hlsResult.Resolution,
-		BitRate:    hlsResult.BitrateKbps,
-		PageLink:   ep.PageLink,
-		MediaURL:   manifestURL,
+		RequestedQuality: string(cfg.Quality),
+		AllAudio:         cfg.AudioPref.IsAll(),
+		Key:              ep.Key,
+		Path:             outPath,
+		Bytes:            fileSize,
+		Title:            ep.Title,
+		Quality:          fmt.Sprintf("%s/%s", hlsResult.Resolution, hlsResult.Codec),
+		Resolution:       hlsResult.Resolution,
+		BitRate:          hlsResult.BitrateKbps,
+		PageLink:         ep.PageLink,
+		MediaURL:         manifestURL,
 		// What this episode actually came out in. The dub line-up drifts between
 		// seasons, so it is recorded per episode rather than assumed for the run.
 		Audio:         hlsAudioNames(hlsResult.AudioTracks),
 		AudioFallback: hlsResult.AudioFallback,
 	}
-	_ = e.deps.StateStore.MarkCompleted(ctx, completedInfo)
+	if completedInfo.RequestedQuality == "" {
+		completedInfo.RequestedQuality = "optimal"
+	}
+	if augment {
+		if existing.RequestedQuality != "" {
+			completedInfo.RequestedQuality = existing.RequestedQuality
+		}
+		completedInfo.Audio = append(append([]string{}, existing.Audio...), completedInfo.Audio...)
+		completedInfo.AllAudio = existing.AllAudio || completedInfo.AllAudio
+		completedInfo.AudioFallback = existing.AudioFallback || completedInfo.AudioFallback
+	}
+	if err := e.deps.StateStore.MarkCompleted(ctx, completedInfo); err != nil {
+		return epFatal, fmt.Errorf("file saved at %s, but recording completion failed: %w", outPath, err)
+	}
 
 	return epSuccess, nil
 }
@@ -1153,7 +1206,7 @@ func (e *engine) resolveAudioPreference(
 	// tracks without probing the network.
 	menuActive := cfg.AudioMenu && e.deps.AudioChooser != nil
 	if cfg.AudioPref.IsAll() && !menuActive {
-		return domain.AudioPreference{}
+		return cfg.AudioPref
 	}
 
 	// Probe the first episode's audio tracks (best-effort) — used for both the
@@ -1222,6 +1275,7 @@ func (e *engine) buildSeriesFromPlaylist(playlist *domain.PagePlaylist, cfg doma
 				Episode: pe.Episode,
 			},
 			Title:     pe.EpisodeTitle,
+			Quality:   qualityFilename(cfg.Quality),
 			Duration:  time.Duration(pe.Duration) * time.Second,
 			Subtitles: pe.Subtitles,
 			MediaSources: []domain.MediaSource{{
@@ -1299,7 +1353,12 @@ func (e *engine) filterCompleted(episodes []domain.Episode, state domain.Downloa
 	}
 	var selected []domain.Episode
 	for _, ep := range episodes {
-		if !e.deps.StateStore.IsCompleted(state, ep.Key) {
+		completed := e.deps.StateStore.IsCompleted(state, ep.Key)
+		if _, hasRecord := state.Completed[fmt.Sprintf("S%dE%d", ep.Key.Season, ep.Key.Episode)]; hasRecord {
+			file, ok := matchingCompletedVideo(state, ep.Key, cfg)
+			completed = ok && cfg.AudioPref.Covers(file.Audio, file.AllAudio)
+		}
+		if !completed {
 			selected = append(selected, ep)
 		}
 	}
@@ -1348,6 +1407,11 @@ func (d *downloadExecutor) Execute(ctx context.Context, job domain.Job) error {
 // sanitization logic as OutputLayout. This is used to place the state file
 // inside the series folder.
 func (e *engine) seriesDirPath(root string, series domain.Series) string {
+	if layout, ok := e.deps.OutputLayout.(interface {
+		SeriesDir(string, domain.Series) string
+	}); ok {
+		return layout.SeriesDir(root, series)
+	}
 	fallback := fmt.Sprintf("series_%s", string(series.ID))
 	seriesDir := fsutil.SanitizeComponent(series.Title, fallback)
 	return filepath.Join(root, seriesDir)
@@ -1396,4 +1460,24 @@ func (e *engine) downloadPoster(ctx context.Context, posterURL, outputDir string
 	}
 
 	return posterPath, nil
+}
+
+func qualityFilename(q domain.Quality) string {
+	if q == "" {
+		return "optimal"
+	}
+	return string(q)
+}
+
+func matchingCompletedVideo(state domain.DownloadState, key domain.EpisodeKey, cfg domain.RunConfig) (domain.CompletedRec, bool) {
+	rec, ok := state.Completed[fmt.Sprintf("S%dE%d", key.Season, key.Episode)]
+	if !ok {
+		return domain.CompletedRec{}, false
+	}
+	for _, file := range rec.Files() {
+		if file.MatchesVideo(cfg.Quality, cfg.Container) && fsutil.IsNonEmptyFile(file.Path) {
+			return file, true
+		}
+	}
+	return domain.CompletedRec{}, false
 }

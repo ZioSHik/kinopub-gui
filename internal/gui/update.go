@@ -98,7 +98,7 @@ func (u *updateChecker) downloadClient() *http.Client {
 // which case updating is disabled (nothing sensible to compare or replace).
 func (u *updateChecker) isDevBuild() bool {
 	_, _, _, ok := parseVersion(u.current)
-	return !ok
+	return !ok || strings.Contains(u.current, "-")
 }
 
 // status returns the cached update status, refreshing it when stale or forced.
@@ -225,7 +225,10 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	exePath, _ = filepath.EvalSymlinks(exePath)
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
 
 	// Download to a temp file alongside the executable (same filesystem so the
 	// replace is an atomic rename).
@@ -249,13 +252,19 @@ func (u *updateChecker) apply(ctx context.Context) (string, error) {
 		}
 	}
 
-	// Verify against checksums.txt when the release provides one.
+	// Install only a release whose platform asset has a verified checksum.
+	if checksumsURL == "" {
+		return "", fmt.Errorf("release has no checksums.txt; refusing to install")
+	}
 	if checksumsURL != "" {
 		want, cerr := fetchChecksum(ctx, u.httpClient(), checksumsURL, assetName())
 		if cerr != nil {
 			return "", fmt.Errorf("checksums: %w", cerr)
 		}
-		if want != "" && !strings.EqualFold(want, sum) {
+		if want == "" {
+			return "", fmt.Errorf("checksums.txt does not list %s; refusing to install", assetName())
+		}
+		if !strings.EqualFold(want, sum) {
 			return "", fmt.Errorf("checksum mismatch — refusing to install (got %s, want %s)", sum, want)
 		}
 	}
@@ -320,6 +329,13 @@ func downloadTo(ctx context.Context, client *http.Client, url string, w io.Write
 	if _, err := io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxBytes)); err != nil {
 		return "", err
 	}
+	var extra [1]byte
+	if _, err := io.ReadFull(resp.Body, extra[:]); err == nil {
+		return "", fmt.Errorf("download exceeds size limit of %d bytes", maxBytes)
+	} else if err != io.EOF {
+		return "", err
+	}
+
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 

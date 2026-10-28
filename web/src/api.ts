@@ -80,6 +80,10 @@ export interface JobView {
   outputPath: string;
   dryRun: boolean;
   quality: string;
+  container?: string;
+  audioSpecs?: AudioSpec[];
+  audioInclude?: string[];
+  audioExclude?: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -220,6 +224,7 @@ export interface DiscoverAudio {
 export interface AudioSpec {
   require: string[];
   forbid: string[];
+  source?: { language: string; type: string; author: string; codec: string; channels: number };
 }
 
 export interface DiscoverEpisode {
@@ -340,6 +345,12 @@ export interface PreviewResponse {
 }
 
 export interface LibraryEpisode {
+  versions?: LibraryEpisode[];
+  requestedQuality?: string;
+  quality?: string;
+  allAudio?: boolean;
+  audio?: string[];
+  audioFallback?: boolean;
   key: string;
   season: number;
   episode: number;
@@ -375,6 +386,10 @@ export interface LibraryResponse {
 }
 
 export interface DownloadedEpisode {
+  path?: string;
+  requestedQuality?: string;
+  quality?: string;
+  allAudio?: boolean;
   key: string;
   season: number;
   episode: number;
@@ -566,6 +581,16 @@ async function req<T>(method: string, path: string, body?: unknown, opts: ReqOpt
   return data as T;
 }
 
+// Autosave requests must reach the server in edit order, including a final
+// flush while leaving Settings. A rejected write must not block later edits.
+let settingsWriteTail: Promise<unknown> = Promise.resolve();
+function saveSettingsInOrder(settings: Settings): Promise<Settings> {
+  const payload = { ...settings, libraryDirs: settings.libraryDirs ? [...settings.libraryDirs] : settings.libraryDirs };
+  const result = settingsWriteTail.then(() => req<Settings>("PUT", "/api/settings", payload));
+  settingsWriteTail = result.catch(() => undefined);
+  return result;
+}
+
 export const api = {
   state: () => req<Snapshot>("GET", "/api/state"),
   ffmpeg: () => req<FFmpegStatus>("GET", "/api/ffmpeg"),
@@ -580,7 +605,7 @@ export const api = {
       timeoutMs: 0,
     }),
   getSettings: () => req<Settings>("GET", "/api/settings"),
-  saveSettings: (s: Settings) => req<Settings>("PUT", "/api/settings", s),
+  saveSettings: saveSettingsInOrder,
   preview: (r: Partial<RunRequest>) => req<PreviewResponse>("POST", "/api/preview", r),
   jobs: () => req<JobView[]>("GET", "/api/jobs"),
   startJob: (r: Partial<StartRequest>) => req<JobView>("POST", "/api/jobs", r),
@@ -614,8 +639,8 @@ export const api = {
   // client-side abort would cancel a repair mid-run.
   doctor: (r: DoctorRequest) => req<DoctorReport>("POST", "/api/doctor", r, { timeoutMs: 0 }),
   library: () => req<LibraryResponse>("GET", "/api/library"),
-  libraryDownloaded: (id: string) =>
-    req<DownloadedResponse>("GET", `/api/library/downloaded?id=${encodeURIComponent(id)}`),
+  libraryDownloaded: (id: string, outputPath = "") =>
+    req<DownloadedResponse>("GET", `/api/library/downloaded?id=${encodeURIComponent(id)}${outputPath ? `&outputPath=${encodeURIComponent(outputPath)}` : ""}`),
   deleteLibrary: (dir: string) => req<{ deleted: boolean }>("POST", "/api/library/delete", { dir }),
   deleteLibraryEpisode: (dir: string, key: string) =>
     req<{ deleted: boolean }>("POST", "/api/library/delete-episode", { dir, key }),

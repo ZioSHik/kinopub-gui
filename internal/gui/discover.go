@@ -265,9 +265,20 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 	}
 
 	seen := map[string]bool{}
+	labelLanguages := map[string]map[string]bool{}
+	for _, audio := range src {
+		label, _ := audioLabel(audio)
+		if labelLanguages[label] == nil {
+			labelLanguages[label] = map[string]bool{}
+		}
+		labelLanguages[label][audio.Lang] = true
+	}
 	out := make([]DiscoverAudio, 0, len(src))
 	for i, a := range src {
 		label, filter := audioLabel(a)
+		if len(labelLanguages[label]) > 1 {
+			label += " · " + strings.ToUpper(a.Lang)
+		}
 		if seen[label] {
 			continue
 		}

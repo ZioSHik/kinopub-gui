@@ -3,8 +3,12 @@ package kinopubapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -143,4 +147,36 @@ func errorsIs(err, target error) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func TestTransportErrorsDoNotExposeOAuthQuery(t *testing.T) {
+	cause := context.DeadlineExceeded
+	err := &url.Error{Op: "Get", URL: "https://api.example/items?access_token=private-access&refresh_token=private-refresh", Err: cause}
+	safe := safeRequestError(err)
+	if strings.Contains(safe.Error(), "private-") || strings.Contains(safe.Error(), "access_token") {
+		t.Fatalf("secret in transport error: %s", safe)
+	}
+	if !errors.Is(safe, cause) {
+		t.Fatal("transport cause lost; cancellation/retry matching would break")
+	}
+}
+
+func TestOAuthDebugNeverLogsResponseCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"access_token":"fake-private-access","refresh_token":"fake-private-refresh","code":"fake-device-code"}`)
+	}))
+	defer srv.Close()
+	var logs []string
+	c := New(srv.Client(), Tokens{}, WithDebug(func(line string) { logs = append(logs, line) }))
+	c.host = srv.URL
+	var result map[string]any
+	if _, err := c.oauth(context.Background(), "/oauth2/token", url.Values{"grant_type": {"device_token"}}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "HTTP 200") {
+		t.Fatal("OAuth response status missing")
+	}
+	if strings.Contains(strings.Join(logs, "\n"), "fake-") {
+		t.Fatal("OAuth debug exposed response credentials")
+	}
 }

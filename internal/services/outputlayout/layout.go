@@ -3,6 +3,7 @@
 package outputlayout
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,17 +36,18 @@ func New(container domain.Container) *Layout {
 // The season directory uses the episode's season number zero-padded to 2 digits.
 // The filename uses S<NN>E<NN> format with the configured container extension.
 func (l *Layout) EpisodePath(root string, series domain.Series, ep domain.Episode) (string, error) {
-	// Derive series directory name.
-	fallback := fmt.Sprintf("series_%s", string(series.ID))
-	seriesDir := fsutil.SanitizeComponent(series.Title, fallback)
 
 	// Derive season directory name.
 	seasonDir := fmt.Sprintf("Season %02d", ep.Key.Season)
 
 	// Derive episode filename.
-	filename := fmt.Sprintf("S%02dE%02d%s", ep.Key.Season, ep.Key.Episode, l.ext)
+	suffix := ""
+	if ep.Quality != "" {
+		suffix = "-" + fsutil.SanitizeComponent(ep.Quality, "optimal")
+	}
+	filename := fmt.Sprintf("S%02dE%02d%s%s", ep.Key.Season, ep.Key.Episode, suffix, l.ext)
 
-	return filepath.Join(root, seriesDir, seasonDir, filename), nil
+	return filepath.Join(l.SeriesDir(root, series), seasonDir, filename), nil
 }
 
 // EnsureDirs creates all directories in the path up to and including the
@@ -58,4 +60,23 @@ func (l *Layout) EnsureDirs(path string) error {
 		return fmt.Errorf("%w: %s", domain.ErrOutputDirUnwritable, err.Error())
 	}
 	return nil
+}
+
+// SeriesDir reuses an old title-only directory only when its state proves it
+// belongs to this item. Catalog IDs prevent namesakes from sharing files.
+func (l *Layout) SeriesDir(root string, series domain.Series) string {
+	title := fsutil.SanitizeComponent(series.Title, fmt.Sprintf("series_%s", series.ID))
+	unique := filepath.Join(root, title+" [kp-"+fsutil.SanitizeComponent(string(series.ID), "unknown")+"]")
+	if _, err := os.Stat(unique); err == nil {
+		return unique
+	}
+	legacy := filepath.Join(root, title)
+	data, err := os.ReadFile(filepath.Join(legacy, ".kinopub-state.json"))
+	var state struct {
+		Series domain.SeriesID `json:"series"`
+	}
+	if err == nil && json.Unmarshal(data, &state) == nil && state.Series == series.ID {
+		return legacy
+	}
+	return unique
 }

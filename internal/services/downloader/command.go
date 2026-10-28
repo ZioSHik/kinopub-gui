@@ -420,15 +420,24 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 		args = append(args, "-i", sub.Path)
 	}
 
-	// Map video from input 0.
-	args = append(args, "-map", "0:v:0")
-
+	if hls.PreserveExisting {
+		// ffmpeg exposes JPEG/PNG cover attachments as video streams with
+		// attached_pic disposition. Matroska needs them reattached as files;
+		// mapping them as video would turn the cover into a timed MJPEG track.
+		videoMap := "0:v"
+		if strings.EqualFold(filepath.Ext(job.OutPath), ".mkv") {
+			videoMap = "0:V"
+		}
+		args = append(args, "-map", videoMap, "-map", "0:a?", "-map", "0:s?", "-map", "0:t?", "-map_metadata", "0", "-map_chapters", "0")
+	} else {
+		args = append(args, "-map", "0:v:0")
+	}
 	if len(hls.AudioTracks) > 0 {
 		// Map each audio input's first audio stream.
 		for i := range hls.AudioTracks {
 			args = append(args, "-map", fmt.Sprintf("%d:a:0", i+1))
 		}
-	} else {
+	} else if !hls.PreserveExisting {
 		// No separate audio — the video file may contain muxed audio. Map any
 		// audio streams from input 0 if present (ignore failure with ?).
 		args = append(args, "-map", "0:a?")
@@ -453,9 +462,9 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 	}
 	labels = makeUnique(labels)
 	for i, a := range hls.AudioTracks {
-		args = append(args, fmt.Sprintf("-metadata:s:a:%d", i), fmt.Sprintf("title=%s", labels[i]))
+		args = append(args, fmt.Sprintf("-metadata:s:a:%d", hls.ExistingAudioCount+i), fmt.Sprintf("title=%s", labels[i]))
 		if a.Language != "" {
-			args = append(args, fmt.Sprintf("-metadata:s:a:%d", i), fmt.Sprintf("language=%s", ToISO6392(a.Language)))
+			args = append(args, fmt.Sprintf("-metadata:s:a:%d", hls.ExistingAudioCount+i), fmt.Sprintf("language=%s", ToISO6392(a.Language)))
 		}
 	}
 
@@ -511,7 +520,15 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 	args = append(args, "-metadata", fmt.Sprintf("episode_id=S%02dE%02d", job.Episode.Key.Season, job.Episode.Key.Episode))
 
 	// Poster as cover art (MKV only).
-	if job.PosterPath != "" && outFormat == "matroska" {
+	if hls.PreserveExisting && outFormat == "matroska" {
+		for i, cover := range hls.ExistingCovers {
+			index := hls.ExistingAttachmentCount + i
+			args = append(args, "-attach", cover.Path,
+				fmt.Sprintf("-metadata:s:t:%d", index), "mimetype="+cover.MIMEType,
+				fmt.Sprintf("-metadata:s:t:%d", index), "filename="+cover.Filename)
+		}
+	}
+	if job.PosterPath != "" && outFormat == "matroska" && !hls.PreserveExisting {
 		args = append(args, "-attach", job.PosterPath)
 		args = append(args, "-metadata:s:t:0", "mimetype=image/jpeg")
 		args = append(args, "-metadata:s:t:0", "filename=cover.jpg")

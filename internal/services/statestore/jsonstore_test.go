@@ -67,7 +67,7 @@ func TestMarkCompletedAndLoad(t *testing.T) {
 	key := domain.EpisodeKey{Series: "series-1", Season: 2, Episode: 5}
 	info := domain.CompletedInfo{
 		Key:      key,
-		Path:     "/tmp/test/S02E05.mkv",
+		Path:     filepath.Join(dir, "S02E05.mkv"),
 		Bytes:    123456,
 		Title:    "Test Episode",
 		Quality:  "1080p",
@@ -101,8 +101,8 @@ func TestMarkCompletedAndLoad(t *testing.T) {
 	if rec.Season != 2 || rec.Episode != 5 {
 		t.Errorf("expected season=2, episode=5, got season=%d, episode=%d", rec.Season, rec.Episode)
 	}
-	if rec.Path != "/tmp/test/S02E05.mkv" {
-		t.Errorf("expected path '/tmp/test/S02E05.mkv', got %q", rec.Path)
+	if rec.Path != info.Path {
+		t.Errorf("expected path %q, got %q", info.Path, rec.Path)
 	}
 	if rec.Bytes != 123456 {
 		t.Errorf("expected bytes 123456, got %d", rec.Bytes)
@@ -124,9 +124,13 @@ func TestMarkCompletedAndLoad(t *testing.T) {
 func TestIsCompleted(t *testing.T) {
 	dir := t.TempDir()
 	store := New(dir, testLogger())
+	path := filepath.Join(dir, "ep.mkv")
+	if err := os.WriteFile(path, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	key := domain.EpisodeKey{Series: "series-1", Season: 1, Episode: 3}
-	_ = store.MarkCompleted(context.Background(), domain.CompletedInfo{Key: key, Path: "/tmp/ep.mkv", Bytes: 100})
+	_ = store.MarkCompleted(context.Background(), domain.CompletedInfo{Key: key, Path: path, Bytes: 100})
 
 	state, _ := store.Load(context.Background(), "series-1")
 
@@ -143,6 +147,10 @@ func TestIsCompleted(t *testing.T) {
 func TestMarkCompletedMultiple(t *testing.T) {
 	dir := t.TempDir()
 	store := New(dir, testLogger())
+	path := filepath.Join(dir, "ep.mkv")
+	if err := os.WriteFile(path, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	keys := []domain.EpisodeKey{
 		{Series: "s1", Season: 1, Episode: 1},
@@ -151,7 +159,7 @@ func TestMarkCompletedMultiple(t *testing.T) {
 	}
 
 	for _, k := range keys {
-		if err := store.MarkCompleted(context.Background(), domain.CompletedInfo{Key: k, Path: "/tmp/ep.mkv", Bytes: 100}); err != nil {
+		if err := store.MarkCompleted(context.Background(), domain.CompletedInfo{Key: k, Path: path, Bytes: 100}); err != nil {
 			t.Fatalf("unexpected error marking %v: %v", k, err)
 		}
 	}

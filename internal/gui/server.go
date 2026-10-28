@@ -24,15 +24,16 @@ import (
 
 // Server hosts the REST API, the SSE event stream and the embedded SPA.
 type Server struct {
-	version  string
-	static   fs.FS
-	hub      *Hub
-	mgr      *JobManager
-	settings *settingsStore
-	updater  *updateChecker
-	tools    *toolInstaller
-	restart  func() // set by main to re-exec the freshly installed binary
-	mux      *http.ServeMux
+	version     string
+	static      fs.FS
+	hub         *Hub
+	mgr         *JobManager
+	createJobMu sync.Mutex // duplicate check and registration must be atomic
+	settings    *settingsStore
+	updater     *updateChecker
+	tools       *toolInstaller
+	restart     func() // set by main to re-exec the freshly installed binary
+	mux         *http.ServeMux
 
 	// kino.watch official-API device login (background poll) state.
 	kpMu    sync.Mutex
@@ -493,6 +494,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// on Download, or coming back to a title whose download is still running, ends
 	// up here — the existing card is the answer, so point at it instead of adding a
 	// second one. Its id travels in the body so the UI can highlight it.
+	s.createJobMu.Lock()
+	defer s.createJobMu.Unlock()
 	if dup, ok := s.mgr.findActiveDuplicate(cfg); ok {
 		// The same verbatim string as the coverage guard below: the frontend
 		// translates known error strings by exact match, and a dynamic message
@@ -898,7 +901,7 @@ func (s *Server) handleLibraryDownloaded(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	writeJSON(w, http.StatusOK, downloadedForItem(s.libraryDirs(), id))
+	writeJSON(w, http.StatusOK, downloadedForItem(s.libraryDirs(), id, r.URL.Query().Get("outputPath")))
 }
 
 func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {

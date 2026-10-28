@@ -88,7 +88,7 @@ export function SettingsPage() {
   useEffect(() => {
     return () => {
       if (saveTimer.current) window.clearTimeout(saveTimer.current);
-      if (dirty.current) void api.saveSettings(formRef.current);
+      if (dirty.current) void api.saveSettings(formRef.current).catch((e) => toast(e.message || t("Save failed"), "error"));
     };
   }, []);
 

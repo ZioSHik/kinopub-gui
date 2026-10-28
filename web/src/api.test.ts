@@ -288,3 +288,28 @@ describe("imgURL", () => {
     );
   });
 });
+
+describe("settings autosave ordering", () => {
+  it("does not send the newer edit while the older one is still being saved", async () => {
+    let finish!: (value: Response) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    fetchMock.mockResolvedValue(jsonResponse({quality: "720p"}));
+    const first = api.saveSettings({quality: "1080p"} as never);
+    const second = api.saveSettings({quality: "720p"} as never);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    finish(jsonResponse({quality: "1080p"}));
+    await first;
+    await second;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).quality).toBe("720p");
+  });
+  it("continues saving newer edits after a failed request", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({error: "disk full"}, {ok: false}));
+    fetchMock.mockResolvedValueOnce(jsonResponse({quality: "720p"}));
+    const first = api.saveSettings({quality: "1080p"} as never);
+    const second = api.saveSettings({quality: "720p"} as never);
+    await expect(first).rejects.toThrow("disk full");
+    await expect(second).resolves.toEqual({quality: "720p"});
+  });
+});

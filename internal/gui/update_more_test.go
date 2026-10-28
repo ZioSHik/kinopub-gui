@@ -95,8 +95,8 @@ func TestDownloadTo_RespectsByteCap(t *testing.T) {
 	}))
 	defer ts.Close()
 	var sb strings.Builder
-	if _, err := downloadTo(context.Background(), ts.Client(), ts.URL, &sb, 10); err != nil {
-		t.Fatalf("downloadTo: %v", err)
+	if _, err := downloadTo(context.Background(), ts.Client(), ts.URL, &sb, 10); err == nil {
+		t.Fatal("oversized download reported success")
 	}
 	if sb.Len() != 10 {
 		t.Errorf("cap not respected: read %d bytes, want 10", sb.Len())

@@ -129,6 +129,8 @@ type StateStore interface {
 	Load(ctx context.Context, series SeriesID) (DownloadState, error)
 	MarkCompleted(ctx context.Context, info CompletedInfo) error
 	SetMetadata(ctx context.Context, series SeriesID, meta SeriesMetadata) error
+	// IsCompleted reports whether the episode has a completion record and its
+	// output file is still present and nonempty.
 	IsCompleted(state DownloadState, key EpisodeKey) bool
 }
 
@@ -167,6 +169,12 @@ type HLSDownloader interface {
 	SetAudioPreference(pref AudioPreference)
 }
 
+// HLSAudioDownloader adds missing audio without fetching the video again.
+type HLSAudioDownloader interface {
+	DownloadAudio(ctx context.Context, manifestURL string, quality Quality, outPath string,
+		key EpisodeKey, sink ProgressSink, existing []string) (*HLSDownloadResult, error)
+}
+
 // AudioChooser presents the available audio tracks to the user and returns the
 // indices to keep. Implementations may block for input up to a timeout; on
 // timeout or non-interactive input they should keep all tracks (return nil).
@@ -190,10 +198,14 @@ type SubtitleDownloader interface {
 
 // HLSDownloadResult contains info about a completed HLS download.
 type HLSDownloadResult struct {
-	Resolution  string // e.g. "1920x1080"
-	BitrateKbps int    // selected variant bitrate
-	Codec       string // "h264" or "h265"
-	TotalBytes  int64
+	PreserveExisting        bool       // input 0 is a completed container; retain its audio, subtitles and attachments
+	ExistingAudioCount      int        // populated by the muxer from ffprobe
+	ExistingAttachmentCount int        // non-picture attachments already mapped from input 0
+	ExistingCovers          []HLSCover // Matroska pictures extracted by the muxer before replacing input 0
+	Resolution              string     // e.g. "1920x1080"
+	BitrateKbps             int        // selected variant bitrate
+	Codec                   string     // "h264" or "h265"
+	TotalBytes              int64
 
 	// VideoPath is the local path to the concatenated video .ts file.
 	VideoPath string
@@ -212,6 +224,13 @@ type HLSDownloadResult struct {
 	// TempDir is the directory holding the intermediate files; the caller
 	// should remove it after remuxing.
 	TempDir string
+}
+
+// HLSCover is an existing embedded picture, copied without re-encoding.
+type HLSCover struct {
+	Path     string
+	Filename string
+	MIMEType string
 }
 
 // HLSAudioTrack describes a downloaded audio rendition.
@@ -259,6 +278,7 @@ type PageEpisode struct {
 	Season       int
 	Episode      int
 	Subtitles    []SubtitleSource
+	AudioSources []AudioSource
 }
 
 // PageSeason is season metadata from the page.

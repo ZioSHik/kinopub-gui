@@ -142,14 +142,16 @@ export function Player({
   // current id/season/episode; lastMark throttles to MARK_INTERVAL playback secs.
   const markRef = useRef<(force: boolean) => void>(() => {});
   const lastMark = useRef(-1);
+  const playbackKey = useRef<{ id: string; season?: number; episode?: number } | null>(null);
   markRef.current = (force: boolean) => {
     const v = videoRef.current;
-    if (!v) return;
+    const key = playbackKey.current;
+    if (!v || !key) return;
     const time = Math.floor(v.currentTime);
     if (time <= 0) return;
     if (!force && lastMark.current >= 0 && Math.abs(time - lastMark.current) < MARK_INTERVAL) return;
     lastMark.current = time;
-    void api.markTime(id, time, season, episode).catch(() => {});
+    void api.markTime(key.id, time, key.season, key.episode).catch(() => {});
   };
 
   // Episode navigation (serials).
@@ -263,9 +265,6 @@ export function Player({
     };
   }, []);
 
-  // Final progress report when the player closes, so the last position sticks.
-  useEffect(() => () => markRef.current(true), []);
-
   // ---- load the episode (fresh hls per episode) -----------------------------
   useEffect(() => {
     let alive = true;
@@ -275,6 +274,9 @@ export function Player({
     if (!video) return;
 
     setLoading(true);
+    setCurrent(0);
+    setDuration(0);
+    setPaused(true);
     setError(null);
     setAudioTracks([]);
     setLevels([]);
@@ -285,12 +287,14 @@ export function Player({
     // Start playback, unless there's a saved position worth resuming — then ask
     // first (the <video> has no autoPlay, so it stays paused until the choice).
     const maybeStart = () => {
+      playbackKey.current = { id, season, episode };
       if (resumeRef.current > 10) setAskResume(true);
       else void video.play().catch(() => {});
     };
 
     const applyRememberedAudio = (tracks: AudioOpt[], cur: number, select: (i: number) => void) => {
-      const pref = localStorage.getItem(AUDIO_PREF_KEY);
+      let pref: string | null = null;
+      try { pref = localStorage.getItem(AUDIO_PREF_KEY); } catch { /* playback works without storage */ }
       const match = pref ? tracks.find((tk) => audioKey(tk.name) === pref) : undefined;
       if (match && match.id !== cur) select(match.id);
       else setActiveAudio(cur);
@@ -394,9 +398,14 @@ export function Player({
       );
 
     return () => {
+      markRef.current(true); // still bound to the episode that actually played
+      playbackKey.current = null;
       alive = false;
       if (hls) hls.destroy();
       hlsRef.current = null;
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
     };
   }, [id, season, episode, title]);
 

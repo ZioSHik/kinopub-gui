@@ -101,11 +101,13 @@ export default function App() {
   const route = useRoute();
   const rawPage = route.page;
   const page: Page = legacyPage(rawPage, route.bookmarkId, route.collectionId);
-  const [collapsed, setCollapsed] = useState<boolean>(() => localStorage.getItem("sidebarCollapsed") === "1");
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem("sidebarCollapsed") === "1"; } catch { return false; }
+  });
   const toggleCollapsed = () =>
     setCollapsed((v) => {
       const next = !v;
-      localStorage.setItem("sidebarCollapsed", next ? "1" : "0");
+      try { localStorage.setItem("sidebarCollapsed", next ? "1" : "0"); } catch { /* Keep the session usable when storage is blocked. */ }
       return next;
     });
 

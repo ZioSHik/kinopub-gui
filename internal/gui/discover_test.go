@@ -470,3 +470,14 @@ func TestToDiscoverDetail(t *testing.T) {
 		t.Errorf("Qualities = %v", d.Qualities)
 	}
 }
+
+func TestCollectAudiosKeepsAnonymousTranslationsInDifferentLanguages(t *testing.T) {
+	it := kinopubapi.Item{Videos: []kinopubapi.Video{{Audios: []kinopubapi.Audio{
+		{Index: 1, Lang: "rus", Type: kinopubapi.NamedID{Title: "Многоголосый"}, Codec: "aac", Channels: 2},
+		{Index: 2, Lang: "ukr", Type: kinopubapi.NamedID{Title: "Многоголосый"}, Codec: "aac", Channels: 2},
+	}}}}
+	got := collectAudios(it)
+	if len(got) != 2 || got[0].Label == got[1].Label {
+		t.Fatalf("different languages were collapsed: %+v", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/services/doctor"
 )
 
@@ -34,13 +35,13 @@ type DoctorIssueView struct {
 
 // DoctorReportView is the serialized doctor.Report plus captured logs.
 type DoctorReportView struct {
-	StateFile    string            `json:"stateFile"`
-	SeriesID     string            `json:"seriesId,omitempty"`
-	SeriesTitle  string            `json:"seriesTitle,omitempty"`
-	TotalInState int               `json:"totalInState"`
-	Healthy      int               `json:"healthy"`
-	Fixed        bool              `json:"fixed"`
-	HasIssues    bool              `json:"hasIssues"`
+	StateFile    string `json:"stateFile"`
+	SeriesID     string `json:"seriesId,omitempty"`
+	SeriesTitle  string `json:"seriesTitle,omitempty"`
+	TotalInState int    `json:"totalInState"`
+	Healthy      int    `json:"healthy"`
+	Fixed        bool   `json:"fixed"`
+	HasIssues    bool   `json:"hasIssues"`
 	// RepairBlocked reports that repair/cleanup was requested but refused because
 	// unfinished downloads are writing into the same folder. The check itself
 	// still ran, so the user sees what's wrong — just nothing was deleted.
@@ -139,8 +140,8 @@ func runDoctor(ctx context.Context, req DoctorRequest, liveRoots []string) (*Doc
 			})
 		}
 	}
-	// Only surface an error if no series could be checked at all.
-	if view.StateFile == "" && firstErr != nil {
+	// Do not present a partially failed check or repair as a successful run.
+	if firstErr != nil {
 		return nil, firstErr
 	}
 	view.Logs = capture.entries
@@ -155,11 +156,7 @@ func pathsOverlap(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	aa, err1 := filepath.Abs(a)
-	bb, err2 := filepath.Abs(b)
-	if err1 != nil || err2 != nil {
-		return false
-	}
+	aa, bb := fsutil.CanonicalPath(a), fsutil.CanonicalPath(b)
 	aa, bb = filepath.Clean(aa), filepath.Clean(bb)
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		aa, bb = strings.ToLower(aa), strings.ToLower(bb)

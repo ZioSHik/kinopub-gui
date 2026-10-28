@@ -115,6 +115,7 @@ export function Modal({
   children,
   wide,
   bare,
+  scrollable,
 }: {
   open: boolean;
   onClose: () => void;
@@ -124,6 +125,8 @@ export function Modal({
   /** Drop the default header and padding — the content draws its own chrome
       (used by the title card, which starts with a full-bleed hero). */
   bare?: boolean;
+  /** Keep the header visible while a long list scrolls inside the dialog. */
+  scrollable?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -153,17 +156,18 @@ export function Modal({
           "card relative my-auto w-full animate-fade-in",
           wide ? "max-w-3xl" : "max-w-lg",
           bare ? "overflow-hidden" : "p-6",
+          scrollable && "flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-h-[calc(100dvh-4rem)]",
         )}
       >
         {!bare && (
-          <div className="mb-5 flex items-center justify-between gap-4">
-            <h2 className="text-lg font-semibold text-slate-100">{title}</h2>
-            <button onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100">
+          <div className="mb-5 flex shrink-0 items-center justify-between gap-4">
+            <h2 className="min-w-0 flex-1 text-lg font-semibold text-slate-100">{title}</h2>
+            <button onClick={onClose} className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.06] hover:text-slate-100">
               <X className="h-5 w-5" />
             </button>
           </div>
         )}
-        {children}
+        {scrollable ? <div className="min-h-0 overflow-y-auto overscroll-contain">{children}</div> : children}
       </div>
     </div>
   );

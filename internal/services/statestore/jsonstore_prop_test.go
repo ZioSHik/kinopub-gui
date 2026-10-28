@@ -69,7 +69,17 @@ func makeTempDir(t *rapid.T) string {
 
 // --- Property 31: State persistence round-trip and skip ---
 // For any sequence of MarkCompleted calls with distinct EpisodeKeys, Load returns
-// a state where IsCompleted is true for all marked keys and false for unmarked keys.
+// a state where IsCompleted is true for marked keys with files and false for
+// unmarked keys.
+
+func completedInfoWithFile(t *rapid.T, dir string, key domain.EpisodeKey) domain.CompletedInfo {
+	t.Helper()
+	path := filepath.Join(dir, episodeKeyString(key)+".mkv")
+	if err := os.WriteFile(path, []byte("video"), 0600); err != nil {
+		t.Fatalf("create completed file: %v", err)
+	}
+	return domain.CompletedInfo{Key: key, Path: path, Bytes: 5}
+}
 
 func TestProperty31_StatePersistenceRoundTrip(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -82,7 +92,7 @@ func TestProperty31_StatePersistenceRoundTrip(t *testing.T) {
 
 		// Mark all keys as completed.
 		for _, k := range markedKeys {
-			if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: k}); err != nil {
+			if err := store.MarkCompleted(ctx, completedInfoWithFile(t, dir, k)); err != nil {
 				t.Fatalf("MarkCompleted failed for %v: %v", k, err)
 			}
 		}
@@ -132,7 +142,7 @@ func TestProperty32_CompletedRecordsSurviveCorruption(t *testing.T) {
 
 		// Mark all keys as completed.
 		for _, k := range keys {
-			if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: k}); err != nil {
+			if err := store.MarkCompleted(ctx, completedInfoWithFile(t, dir, k)); err != nil {
 				t.Fatalf("MarkCompleted failed for %v: %v", k, err)
 			}
 		}
@@ -192,7 +202,7 @@ func TestProperty33_ForceRedownloadIsCallerResponsibility(t *testing.T) {
 
 		// Mark all keys as completed.
 		for _, k := range keys {
-			if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: k}); err != nil {
+			if err := store.MarkCompleted(ctx, completedInfoWithFile(t, dir, k)); err != nil {
 				t.Fatalf("MarkCompleted failed for %v: %v", k, err)
 			}
 		}

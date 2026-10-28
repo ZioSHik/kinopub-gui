@@ -32,6 +32,7 @@ s1e1.html
 # Frontend
 web/node_modules/
 web/.vite/
+web/coverage/
 # NOTE: web/dist/ is intentionally committed — it is embedded into the GUI binary
 # via //go:embed all:dist in web/embed.go, so a clean `go build`/`go install`
 # works without Node. The explicit un-ignore below makes any future accidental

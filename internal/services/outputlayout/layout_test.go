@@ -33,7 +33,7 @@ func TestEpisodePath_Basic(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := filepath.Join("/output", "Тест Сериал", "Season 01", "S01E08.mkv")
+	want := filepath.Join("/output", "Тест Сериал [kp-12345]", "Season 01", "S01E08.mkv")
 	if got != want {
 		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}
@@ -59,7 +59,7 @@ func TestEpisodePath_MP4Container(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := filepath.Join("/root", "Show", "Season 12", "S12E03.mp4")
+	want := filepath.Join("/root", "Show [kp-99]", "Season 12", "S12E03.mp4")
 	if got != want {
 		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}
@@ -85,7 +85,7 @@ func TestEpisodePath_SanitizesTitle(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := filepath.Join("/out", "Bad_Title_With_Chars", "Season 02", "S02E05.mkv")
+	want := filepath.Join("/out", "Bad_Title_With_Chars [kp-42]", "Season 02", "S02E05.mkv")
 	if got != want {
 		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}
@@ -111,7 +111,7 @@ func TestEpisodePath_EmptyTitleFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := filepath.Join("/out", "series_777", "Season 01", "S01E01.mkv")
+	want := filepath.Join("/out", "series_777 [kp-777]", "Season 01", "S01E01.mkv")
 	if got != want {
 		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}
@@ -137,7 +137,7 @@ func TestEpisodePath_ZeroPadding(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := filepath.Join("/", "X", "Season 03", "S03E14.mkv")
+	want := filepath.Join("/", "X [kp-1]", "Season 03", "S03E14.mkv")
 	if got != want {
 		t.Errorf("EpisodePath = %q, want %q", got, want)
 	}

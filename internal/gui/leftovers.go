@@ -55,6 +55,7 @@ func jobTempPaths(seriesDir string, stems map[string]bool) []string {
 		// episode stem ahead of the first dot, so this identifies the owner
 		// without depending on the configured container extension.
 		stem, _, _ := strings.Cut(name, ".")
+		stem, _, _ = strings.Cut(stem, "-")
 		if !stems[stem] {
 			if d.IsDir() {
 				return fs.SkipDir

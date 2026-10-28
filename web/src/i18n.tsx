@@ -165,6 +165,11 @@ const RU: Record<string, string> = {
   "Estimated size — refines as it downloads (HLS has no fixed total)":
     "Оценка размера — уточняется по мере загрузки (у HLS нет фиксированного итога)",
 
+  "Select episodes missing the selected quality or voiceover": "Выбрать серии без нужного качества или озвучки",
+  "Voiceover not recorded": "Озвучка не указана",
+  "{n} of {m} downloaded episodes match the selected quality and voiceover":
+    "Выбранным качеству и озвучке соответствуют {n} из {m} скачанных серий",
+
   // Library
   "Downloads found in your output folders": "Загрузки из ваших папок",
   Rescan: "Пересканировать",
@@ -178,7 +183,7 @@ const RU: Record<string, string> = {
   Movie: "Фильм",
   Serial: "Сериал",
   "On disk": "На диске",
-  "{n} downloading · {m} on disk": "{n} качается · {m} на диске",
+  "{n} in the queue · {m} on disk": "{n} в очереди · {m} на диске",
   "Show actions": "Показать действия",
   "Search by title or genre…": "Поиск по названию или жанру…",
   "Clear search": "Очистить поиск",
@@ -256,7 +261,7 @@ const RU: Record<string, string> = {
   "{n} of {m} selected": "выбрано {n} из {m}",
   "Select all": "Выбрать все",
   "Deselect all": "Снять все",
-  "Only missing": "Только новые",
+  "Only missing": "Недостающие",
   "Select only episodes not yet downloaded": "Выбрать только ещё не скачанные серии",
   Downloaded: "Скачано",
   "Downloaded · {details}": "Скачано · {details}",
@@ -378,6 +383,15 @@ const RU: Record<string, string> = {
   "Show more": "Показать полностью",
   "Show less": "Свернуть",
   Voiceover: "Озвучка",
+  Dubbing: "Дубляж",
+  "Multi-voice translation": "Многоголосый перевод",
+  "Two-voice translation": "Двухголосый перевод",
+  "Author's translation": "Авторский перевод",
+  "Single-voice translation": "Одноголосый перевод",
+  "Original soundtrack": "Оригинал",
+  Commentary: "Комментарии",
+  "Other tracks": "Другие дорожки",
+  "Choose a voiceover": "Выберите озвучку",
   "(all tracks)": "(все дорожки)",
   "(all selected)": "(выбраны все)",
   "(none)": "(ничего)",
@@ -516,6 +530,13 @@ const RU: Record<string, string> = {
     "Часть временных файлов не удалось удалить — проверьте папку загрузок",
   "Couldn't scan your folders": "Не удалось просканировать папки",
   "Finished downloads": "Завершённые загрузки",
+  "Unknown quality": "Разрешение не указано",
+  "Play {episode} · {quality}": "Воспроизвести {episode} · {quality}",
+  "Delete {episode} from disk": "Удалить {episode} с диска",
+  "Delete all versions of this episode": "Удалить все версии этой серии",
+  "{n} files": "{n} файлов",
+  "Not enough disk space. Free space in the download folder, then retry.":
+    "Недостаточно места на диске. Освободите место в папке загрузки и повторите попытку.",
 };
 
 interface I18nValue {
@@ -527,7 +548,8 @@ interface I18nValue {
 const I18nCtx = createContext<I18nValue | null>(null);
 
 function detectLang(): Lang {
-  const saved = localStorage.getItem("kinopub.lang");
+  let saved: string | null = null;
+  try { saved = localStorage.getItem("kinopub.lang"); } catch { /* use browser language */ }
   if (saved === "ru" || saved === "en") return saved;
   return navigator.language?.toLowerCase().startsWith("ru") ? "ru" : "en";
 }
@@ -536,7 +558,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => detectLang());
 
   const setLang = (l: Lang) => {
-    localStorage.setItem("kinopub.lang", l);
+    try { localStorage.setItem("kinopub.lang", l); } catch { /* language still changes for this session */ }
     document.documentElement.lang = l;
     setLangState(l);
   };
@@ -578,6 +600,10 @@ export function looksLikeCanceled(msg?: string): boolean {
   if (!msg) return false;
   const m = msg.toLowerCase();
   return m === "canceled" || m === "cancelled" || m.includes("context canceled");
+}
+
+export function looksLikeDiskFull(msg?: string): boolean {
+  return /no space left on device|not enough space on the disk|disk (?:is )?full|\bENOSPC\b/i.test(msg || "");
 }
 
 // looksLikeTimeout reports whether an error message indicates a network timeout

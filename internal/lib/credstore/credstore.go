@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -150,7 +151,7 @@ func Save(creds Credentials) error {
 	}
 
 	// Write with restrictive permissions (owner-only read/write).
-	if err := os.WriteFile(path, ciphertext, 0600); err != nil {
+	if err := fsutil.AtomicWrite(path, ciphertext, 0600); err != nil {
 		return fmt.Errorf("write credential file: %w", err)
 	}
 

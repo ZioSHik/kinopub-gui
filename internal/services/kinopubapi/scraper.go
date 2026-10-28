@@ -94,6 +94,14 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 		if manifest == "" {
 			return
 		}
+		sources := make([]domain.AudioSource, 0, len(audios))
+		for i, audio := range audios {
+			index := audio.Index
+			if index == 0 {
+				index = i + 1
+			}
+			sources = append(sources, domain.AudioSource{Index: index, Language: audio.Lang, Type: audio.Type.Title, Author: audio.Author.Title, Codec: audio.Codec, Channels: audio.Channels})
+		}
 		var subs []domain.SubtitleSource
 		for _, sub := range subtitles {
 			if strings.TrimSpace(sub.URL) != "" {
@@ -107,6 +115,7 @@ func BuildPagePlaylist(item Item) (*domain.PagePlaylist, error) {
 			Season:       season,
 			Episode:      episode,
 			Subtitles:    subs,
+			AudioSources: sources,
 		})
 		seasonCounts[season]++
 	}
