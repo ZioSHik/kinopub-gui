@@ -3,10 +3,10 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { TitleDetail } from "./TitleDetail";
 
-const mocks = vi.hoisted(() => ({detail: vi.fn(), downloaded: vi.fn()}));
+const mocks = vi.hoisted(() => ({detail: vi.fn(), downloaded: vi.fn(), start: vi.fn()}));
 vi.mock("../api", async (original) => ({
   ...(await original<typeof import("../api")>()),
-  api: { discoverItem: mocks.detail, libraryDownloaded: mocks.downloaded, discoverSimilar: async () => ({items: []}) },
+  api: { startJob: mocks.start, discoverItem: mocks.detail, libraryDownloaded: mocks.downloaded, discoverSimilar: async () => ({items: []}) },
 }));
 vi.mock("../store", () => ({useApp: () => ({
   settings: {quality: "1080p", container: "mkv", outputPath: "/downloads"},
@@ -15,6 +15,7 @@ vi.mock("../store", () => ({useApp: () => ({
 
 beforeEach(() => {
   localStorage.clear();
+  mocks.start.mockClear();
   mocks.detail.mockResolvedValue({id: "77890",title: "Severance",year: 2022,poster: "",isSerial: true,
     rating: 0,imdbRating: 0,kinopoiskRating: 0,episodeCount: 8,itemUrl: "https://kino.watch/item/view/77890",
     audios: [{label: "Studio A",filter: "Studio A",codec: "aac"}, {label: "Studio B",filter: "Studio B",codec: "aac"}],
@@ -63,4 +64,26 @@ it("clearing all voiceovers keeps existing video unchecked and explains why down
   }
   expect(screen.getByRole("button",{name: /^9 Episode 9/})).toHaveAttribute("aria-pressed","true");
   expect(screen.queryByText(/downloaded episodes match the selected quality and voiceover/)).not.toBeInTheDocument();
+});
+
+
+it.each([false, true])("sends an original-only selection even when commentary is not listed (%s)", async (listCommentary) => {
+  const detail = await mocks.detail();
+  detail.audios = [
+    {type: "Оригинал",lang: "eng",author: "",label: "Оригинал · AAC 5.1",filter: "Оригинал",codec: "aac"},
+    {type: "Оригинал",lang: "eng",author: "Комментарии",label: "Оригинал · Комментарии",filter: "Комментарии",codec: "aac"},
+  ];
+  if (!listCommentary) detail.audios = detail.audios.slice(0,1);
+  mocks.detail.mockResolvedValue(detail);
+  mocks.downloaded.mockResolvedValue({episodes: []});
+  mocks.start.mockResolvedValue({id: "test-job"});
+  render(<I18nProvider><TitleDetail id="409" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button",{name: "Оригинал · AAC 5.1"}));
+  await act(async () => {fireEvent.click(screen.getByRole("button",{name: "Download (8)"}));});
+  const request = mocks.start.mock.calls[0][0];
+  expect(request.audioSpecs).toHaveLength(1);
+  expect(request.audioSpecs[0].require).toEqual(["Оригинал"]);
+  expect(request.audioSpecs[0].forbid).toContain("комментар");
+  expect(request.audioSpecs[0].forbid).toContain("commentar");
 });

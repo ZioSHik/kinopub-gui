@@ -1,4 +1,4 @@
-import type { DiscoverAudio } from "../api";
+import type { AudioSpec, DiscoverAudio } from "../api";
 
 // Remembering "the voiceover I picked last time" needs an identity that survives
 // the move to another title or season. The card's label is not it: it reads
@@ -91,6 +91,7 @@ export function matchDownloadedAudio<T extends Pick<DiscoverAudio, "filter" | "c
     const codec = canonCodec((a.codec || "").toLowerCase());
     return names.some((n) => {
       if (!n.includes(studio)) return false;
+      if (isCommentaryName(n) && !isCommentaryAudio(a)) return false;
       // One studio can offer several renditions; only the codec tells them
       // apart, so a plain entry must not claim a recording that is AC3 and vice
       // versa — and an AC3 entry must not claim an E-AC3 recording just because
@@ -179,4 +180,25 @@ export function writeAudioPref(itemId: string, identities: string[]) {
   } catch {
     /* storage unavailable — the preference just won't persist */
   }
+}
+
+// Commentary is deliberately separate from an original soundtrack: providers
+// often name both "Original", with a commentary suffix on the extra track.
+export const COMMENTARY_MARKERS = ["комментар", "commentar"];
+export function isCommentaryName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return COMMENTARY_MARKERS.some((marker) => lower.includes(marker));
+}
+export function isCommentaryAudio(audio: { filter?: string; label?: string; author?: string }): boolean {
+  return isCommentaryName([audio.filter, audio.label, audio.author].filter(Boolean).join(" "));
+}
+
+export function audioSelectionSpecs(audios: DiscoverAudio[]): AudioSpec[] {
+  return audios.map((audio) => {
+    const require = [audio.filter].filter(Boolean);
+    if (isTaggedCodec(audio) && audio.codec) require.push(audio.codec);
+    const forbid = isTaggedCodec(audio) ? [] : [...TAGGED_CODECS];
+    if (!isCommentaryAudio(audio)) forbid.push(...COMMENTARY_MARKERS);
+    return { require, forbid };
+  });
 }

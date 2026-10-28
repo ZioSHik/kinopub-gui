@@ -25,3 +25,16 @@ it("groups voiceovers by type while preserving exact codec variants and selectio
   fireEvent.click(within(author).getByRole("button",{name: audios[2].label}));
   expect(toggle).toHaveBeenCalledWith(audios[2].label);
 });
+
+
+it("puts original commentary in its own category", () => {
+  const audios = [
+    {type: "Оригинал",lang: "eng",author: "",label: "Оригинал · AAC 5.1",filter: "Оригинал"},
+    {type: "Оригинал",lang: "eng",author: "Комментарии",label: "Оригинал · Комментарии",filter: "Комментарии"},
+  ] as DiscoverAudio[];
+  render(<I18nProvider><AudioPicker audios={audios} selected={new Set()} onToggle={vi.fn()} /></I18nProvider>);
+  const original = screen.getByRole("group", {name: "Original soundtrack 1"});
+  const commentary = screen.getByRole("group", {name: "Commentary 1"});
+  expect(within(original).getAllByRole("button")).toHaveLength(1);
+  expect(within(commentary).getByRole("button",{name: "Оригинал · Комментарии"})).toBeInTheDocument();
+});

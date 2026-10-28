@@ -289,6 +289,12 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		if fellBack && pref.RequiresOriginal() {
 			return nil, fmt.Errorf("requested original soundtrack is unavailable for %s; refusing to substitute another voiceover", epLabel)
 		}
+		if fellBack && pref.RequestsCommentary() {
+			return nil, fmt.Errorf("requested commentary is unavailable for %s; refusing to substitute another soundtrack", epLabel)
+		}
+		if len(keep) == 0 {
+			return nil, fmt.Errorf("no requested audio is available for %s; refusing to substitute commentary", epLabel)
+		}
 		audioFellBack = fellBack
 		filtered := make([]AudioRendition, 0, len(keep))
 		var keptLabels []string

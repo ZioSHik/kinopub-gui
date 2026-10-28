@@ -2,6 +2,7 @@ import { useId } from "react";
 import clsx from "clsx";
 import { Check } from "lucide-react";
 import type { DiscoverAudio } from "../api";
+import { isCommentaryAudio } from "../lib/audio";
 import { useI18n } from "../i18n";
 
 type AudioGroup = { type: string; title: string; tracks: DiscoverAudio[] };
@@ -12,6 +13,7 @@ const CATEGORIES = [
   ["авторский", "Author's translation"],
   ["одноголосый", "Single-voice translation"],
   ["оригинал", "Original soundtrack"],
+  ["комментарии", "Commentary"],
 ] as const;
 
 function groupAudios(audios: DiscoverAudio[]): AudioGroup[] {
@@ -20,7 +22,8 @@ function groupAudios(audios: DiscoverAudio[]): AudioGroup[] {
     // Old responses may only carry the combined label. Recognize its type
     // prefix without interpreting an unknown studio name as a category.
     const prefix = audio.label.split(" · ")[0].trim();
-    const type = audio.type?.trim() || (CATEGORIES.some(([key]) => key === prefix.toLowerCase()) ? prefix : "");
+    const type = isCommentaryAudio(audio) ? "Комментарии"
+      : audio.type?.trim() || (CATEGORIES.some(([key]) => key === prefix.toLowerCase()) ? prefix : "");
     const key = type.toLowerCase();
     const group = groups.get(key) || { type, title: CATEGORIES.find(([name]) => name === key)?.[1] || type || "Other tracks", tracks: [] };
     group.tracks.push(audio);
@@ -35,7 +38,12 @@ function groupAudios(audios: DiscoverAudio[]): AudioGroup[] {
 
 function trackLabel(audio: DiscoverAudio, type: string): string {
   const parts = audio.label.split(" · ");
-  if (type && parts[0].trim().toLowerCase() === type.toLowerCase()) parts.shift();
+  const sourceType = audio.type?.trim() || type;
+  if (sourceType && parts[0].trim().toLowerCase() === sourceType.toLowerCase()) parts.shift();
+  if (isCommentaryAudio(audio)) {
+    const label = parts.join(" · ");
+    return [audio.lang?.toUpperCase(), label].filter(Boolean).join(" · ") || audio.label;
+  }
   // A type-only entry has no studio. Keep language/codec rather than showing
   // a blank button or repeating the category heading for every rendition.
   if (!audio.author && type && audio.lang) parts.unshift(audio.lang.toUpperCase());

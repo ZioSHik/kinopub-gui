@@ -68,6 +68,11 @@ type AudioSpec struct {
 
 // matches reports whether track t satisfies this spec.
 func (s AudioSpec) matches(t AudioTrackInfo) bool {
+	// The source labels commentary as "Original. Commentary". It is a separate
+	// kind of audio, not an extra match for an ordinary original/studio spec.
+	if IsCommentaryAudio(t.Name) && !requestsCommentary(s.Require) {
+		return false
+	}
 	for _, r := range s.Require {
 		if !audioMatches(t, r) {
 			return false
@@ -181,7 +186,8 @@ func preferRank(t AudioTrackInfo, prefer []string) int {
 
 // SelectAudio resolves which audio tracks to keep for an episode given a
 // preference. It returns the indices (into tracks) to download, in ascending
-// order. The result is deterministic and never empty unless tracks is empty.
+// order. The result is deterministic. If only unrequested commentary is
+// available, it returns no tracks.
 //
 // Algorithm:
 //  1. Drop tracks matching any Exclude pattern. If that removes everything, the
@@ -238,9 +244,14 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 		if len(matched) > 0 {
 			return matched, false
 		}
-		best := make([]int, len(tracks))
-		for i := range tracks {
-			best[i] = i
+		best := make([]int, 0, len(tracks))
+		for i, track := range tracks {
+			if !IsCommentaryAudio(track.Name) || pref.RequestsCommentary() {
+				best = append(best, i)
+			}
+		}
+		if len(best) == 0 {
+			return nil, true
 		}
 		sort.SliceStable(best, func(a, b int) bool {
 			ra, rb := preferRank(tracks[best[a]], pref.Prefer), preferRank(tracks[best[b]], pref.Prefer)
@@ -275,7 +286,7 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	// 3. Keep includes among the remaining tracks.
 	matched := make([]int, 0, len(remaining))
 	for _, i := range remaining {
-		if matchesAny(tracks[i], pref.Include) {
+		if matchesRequestedAudio(tracks[i], pref.Include) {
 			matched = append(matched, i)
 		}
 	}
@@ -284,7 +295,15 @@ func SelectAudioResolved(tracks []AudioTrackInfo, pref AudioPreference) (indices
 	}
 
 	// 4. Fallback: pick the single best remaining track.
-	best := append([]int(nil), remaining...)
+	best := make([]int, 0, len(remaining))
+	for _, i := range remaining {
+		if !IsCommentaryAudio(tracks[i].Name) || pref.RequestsCommentary() {
+			best = append(best, i)
+		}
+	}
+	if len(best) == 0 {
+		return nil, true
+	}
 	sort.SliceStable(best, func(a, b int) bool {
 		ra, rb := preferRank(tracks[best[a]], pref.Prefer), preferRank(tracks[best[b]], pref.Prefer)
 		if ra != rb {
@@ -304,7 +323,7 @@ func DeriveAudioPrefer(tracks []AudioTrackInfo, include []string) []string {
 	seen := make(map[string]bool)
 	var out []string
 	for _, t := range tracks {
-		if !matchesAny(t, include) {
+		if !matchesRequestedAudio(t, include) {
 			continue
 		}
 		lang := normLang(t.Language)
@@ -527,7 +546,7 @@ func (p AudioPreference) Covers(names []string, all bool) bool {
 	for _, include := range p.Include {
 		found := false
 		for _, track := range tracks {
-			if audioMatches(track, include) {
+			if matchesRequestedAudio(track, []string{include}) {
 				found = true
 				break
 			}
@@ -556,4 +575,39 @@ func SameAudioRendition(a, b string) bool {
 		return strings.ToLower(name)
 	}
 	return canonical(a) == canonical(b)
+}
+
+// IsCommentaryAudio recognizes explicit commentary labels in Russian/English.
+func IsCommentaryAudio(name string) bool {
+	name = strings.ToLower(name)
+	return strings.Contains(name, "комментар") || strings.Contains(name, "commentar")
+}
+
+func requestsCommentary(patterns []string) bool {
+	for _, pattern := range patterns {
+		if IsCommentaryAudio(pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// RequestsCommentary is based only on positive selection, never on exclusions.
+func (p AudioPreference) RequestsCommentary() bool {
+	if requestsCommentary(p.Include) {
+		return true
+	}
+	for _, spec := range p.Specs {
+		if requestsCommentary(spec.Require) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesRequestedAudio(track AudioTrackInfo, patterns []string) bool {
+	if IsCommentaryAudio(track.Name) && !requestsCommentary(patterns) {
+		return false
+	}
+	return matchesAny(track, patterns)
 }

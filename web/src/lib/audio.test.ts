@@ -212,3 +212,13 @@ describe("codec variants of one studio", () => {
     ).toEqual(["eac3"]);
   });
 });
+
+
+describe("original soundtrack and commentary", () => {
+  const original = audio({filter: "Оригинал", label: "Оригинал · AAC 5.1", codec: "aac"});
+  const commentary = audio({filter: "Комментарии", label: "Оригинал · Комментарии", codec: "aac"});
+  it("does not mark commentary as a downloaded original", () => {
+    expect(matchDownloadedAudio([original, commentary], ["19. Оригинал. Комментарии (ENG)"])).toEqual([commentary]);
+    expect(matchDownloadedAudio([original, commentary], ["18. Оригинал (ENG)"])).toEqual([original]);
+  });
+});

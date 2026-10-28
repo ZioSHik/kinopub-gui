@@ -389,6 +389,7 @@ const RU: Record<string, string> = {
   "Author's translation": "Авторский перевод",
   "Single-voice translation": "Одноголосый перевод",
   "Original soundtrack": "Оригинал",
+  Commentary: "Комментарии",
   "Other tracks": "Другие дорожки",
   "Choose a voiceover": "Выберите озвучку",
   "(all tracks)": "(все дорожки)",

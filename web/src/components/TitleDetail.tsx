@@ -31,10 +31,9 @@ import { useI18n } from "../i18n";
 import { pushRoute } from "../router";
 import {
   audioIdentity,
-  isTaggedCodec,
+  audioSelectionSpecs,
   matchRememberedAudio,
   readAudioPref,
-  TAGGED_CODECS,
   writeAudioPref,
 } from "../lib/audio";
 import { voiceoverLabels } from "../lib/libraryAudio";
@@ -348,25 +347,10 @@ export function TitleDetail({
       toast(t("Select at least one voiceover"), "error");
       return;
     }
-    // When every track is selected, send no filter (keep all). Otherwise build an
-    // exact per-track spec so the chosen variant is matched precisely — separating
-    // a plain dub from its AC3 sibling (same studio name). The discriminator is
-    // the CODEC: tagged codecs (AC3/DTS/…) appear verbatim in the HLS track name,
-    // so the entry REQUIRES that token; a plain (AAC/MP3) entry instead FORBIDS the
-    // tagged tokens so it doesn't also match its AC3 sibling.
-    // The token list lives in lib/audio.ts, shared with the rules that decide
-    // which entries are pre-ticked — keeping a second copy here is how the two
-    // drifted apart and one studio's AAC and AC3 renditions both got selected.
-    const isTagged = isTaggedCodec;
-    const allSelected = chosenAudios.length === detail.audios.length;
-    const audioSpecs =
-      allSelected || chosenAudios.length === 0
-        ? undefined
-        : chosenAudios.map((a) => {
-            const require = [a.filter].filter(Boolean);
-            if (isTagged(a) && a.codec) require.push(a.codec);
-            return { require, forbid: isTagged(a) ? [] : TAGGED_CODECS };
-          });
+    // Keep the picker selection explicit even when all listed tracks are
+    // checked: the catalog can omit extra HLS tracks such as commentary.
+    const audioSpecs = chosenAudios.length ? audioSelectionSpecs(chosenAudios) : undefined;
+
     // Remember this voiceover choice for the next title/season. Stored by studio
     // identity, the same thing the specs above match on — remembering the whole
     // label made the next title claim the voiceover was unavailable whenever
