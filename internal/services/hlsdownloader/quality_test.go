@@ -275,3 +275,14 @@ func TestAbs(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitCodecSurvivesResolutionFallback(t *testing.T) {
+	vs := []Variant{{Height: 1080, Codecs: "avc1"}, {Height: 720, Codecs: "hvc1"}}
+	got, err := SelectVariant(vs, "1080p-h265")
+	if err != nil || !got.IsH265() {
+		t.Fatalf("codec substituted: %+v %v", got, err)
+	}
+	if _, err := SelectVariant(vs[:1], "1080p-h265"); err == nil {
+		t.Fatal("missing codec silently substituted")
+	}
+}

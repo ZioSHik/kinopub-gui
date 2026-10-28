@@ -340,6 +340,12 @@ export interface PreviewResponse {
 }
 
 export interface LibraryEpisode {
+  versions?: LibraryEpisode[];
+  requestedQuality?: string;
+  quality?: string;
+  allAudio?: boolean;
+  audio?: string[];
+  audioFallback?: boolean;
   key: string;
   season: number;
   episode: number;
@@ -375,6 +381,10 @@ export interface LibraryResponse {
 }
 
 export interface DownloadedEpisode {
+  path?: string;
+  requestedQuality?: string;
+  quality?: string;
+  allAudio?: boolean;
   key: string;
   season: number;
   episode: number;
@@ -614,8 +624,8 @@ export const api = {
   // client-side abort would cancel a repair mid-run.
   doctor: (r: DoctorRequest) => req<DoctorReport>("POST", "/api/doctor", r, { timeoutMs: 0 }),
   library: () => req<LibraryResponse>("GET", "/api/library"),
-  libraryDownloaded: (id: string) =>
-    req<DownloadedResponse>("GET", `/api/library/downloaded?id=${encodeURIComponent(id)}`),
+  libraryDownloaded: (id: string, outputPath = "") =>
+    req<DownloadedResponse>("GET", `/api/library/downloaded?id=${encodeURIComponent(id)}${outputPath ? `&outputPath=${encodeURIComponent(outputPath)}` : ""}`),
   deleteLibrary: (dir: string) => req<{ deleted: boolean }>("POST", "/api/library/delete", { dir }),
   deleteLibraryEpisode: (dir: string, key: string) =>
     req<{ deleted: boolean }>("POST", "/api/library/delete-episode", { dir, key }),

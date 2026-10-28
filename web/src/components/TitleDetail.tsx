@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import {
   CalendarDays,
@@ -38,6 +38,7 @@ import {
   TAGGED_CODECS,
   writeAudioPref,
 } from "../lib/audio";
+import { matchesDownload } from "../lib/downloaded";
 import { initialEpisodeSelection, isQueued, nothingLeftToQueue, queueCoverage } from "../lib/queue";
 import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
@@ -92,7 +93,11 @@ export function TitleDetail({
   const [audioPrefMissing, setAudioPrefMissing] = useState(false);
   // Episodes of this title already on disk, keyed by episode key. Carries what
   // each one was downloaded in — resolution and voiceover.
-  const [downloaded, setDownloaded] = useState<Map<string, DownloadedEpisode>>(new Map());
+  const [downloadedFiles, setDownloadedFiles] = useState<DownloadedEpisode[]>([]);
+  const downloaded = useMemo(() => new Map(downloadedFiles
+    .filter((e) => matchesDownload(e, quality, settings.container, detail?.audios || [], audioSel))
+    .map((e) => [e.key, e])), [downloadedFiles, quality, settings.container, detail, audioSel]);
+  const selectionVersion = useRef("");
   // Whether the on-disk scan has answered. The episode selection waits for it:
   // seeding before it lands would tick episodes that are already downloaded.
   const [downloadedReady, setDownloadedReady] = useState(false);
@@ -117,7 +122,8 @@ export function TitleDetail({
     setSeeded(false);
     setAudioSel(new Set());
     setAudioPrefMissing(false);
-    setDownloaded(new Map());
+    setDownloadedFiles([]);
+    selectionVersion.current = "";
     setDownloadedReady(false);
     setPlotOpen(false);
     api
@@ -143,7 +149,7 @@ export function TitleDetail({
       .then((r) => alive && setSimilar(r.items || []))
       .catch(() => {});
     api
-      .libraryDownloaded(id)
+      .libraryDownloaded(id, settings.outputPath)
       .then(
         (r) =>
           alive &&
@@ -152,14 +158,14 @@ export function TitleDetail({
           // missing"), and counting it as downloaded removed the only way to
           // re-download it: the button read "Already downloaded — open" and the
           // episode dropped out of both the seeded selection and "Only missing".
-          setDownloaded(new Map((r.episodes || []).filter((e) => e.exists).map((e) => [e.key, e]))),
+          setDownloadedFiles((r.episodes || []).filter((e) => e.exists)),
       )
       .catch(() => {}) // a failed scan just means nothing is known to be on disk
       .finally(() => alive && setDownloadedReady(true));
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, settings.outputPath]);
 
   // What the queue already holds for this title. Read straight off the live job
   // list, so it is true the moment a job is submitted and stays true for as long
@@ -218,7 +224,7 @@ export function TitleDetail({
     // What to pre-tick, most truthful source first: the voiceover the episodes on
     // disk are actually in, then this title's own remembered choice, then the
     // last choice made anywhere as a mere starting guess.
-    const onDisk = [...downloaded.values()].flatMap((e) => e.audio || []);
+    const onDisk = downloadedFiles.flatMap((e) => e.audio || []);
     const fromDisk = matchDownloadedAudio(detail.audios, onDisk);
     const remembered = readAudioPref(id);
     const matched = fromDisk.length ? fromDisk : matchRememberedAudio(detail.audios, remembered.prefs);
@@ -237,7 +243,17 @@ export function TitleDetail({
     // was what put the message on titles the user had never touched.
     setAudioSel(new Set());
     setAudioPrefMissing(onDisk.length > 0 || (remembered.scoped && remembered.prefs.length > 0));
-  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, queuedKeys, id]);
+  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, downloadedFiles, queuedKeys, id]);
+
+  // A changed quality or voiceover needs a fresh missing-episode selection.
+  // Keep manual episode choices while this selection remains unchanged.
+  useEffect(() => {
+    if (!seeded || !downloadedReady) return;
+    const signature = JSON.stringify([id, quality, settings.container, [...audioSel].sort()]);
+    if (selectionVersion.current === signature) return;
+    selectionVersion.current = signature;
+    setEpSel(initialEpisodeSelection(allEpKeys, downloaded, queuedKeys));
+  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, downloaded, queuedKeys]);
 
   const toggleAudio = (label: string) =>
     setAudioSel((cur) => {

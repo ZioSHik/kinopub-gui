@@ -146,6 +146,9 @@ func audioMatches(t AudioTrackInfo, pattern string) bool {
 		return false
 	}
 	hay := strings.ToLower(t.Name + " " + t.Language)
+	if codec := AudioCodec(p); codec != "" && strings.ReplaceAll(p, "-", "") == codec {
+		return AudioCodec(hay) == codec
+	}
 	if strings.Contains(hay, p) {
 		return true
 	}
@@ -485,4 +488,58 @@ func anyChosenMatches(tracks []AudioTrackInfo, chosen map[int]bool, pattern stri
 		}
 	}
 	return false
+}
+
+// AudioCodec returns the most specific named codec, folding spelling aliases.
+func AudioCodec(name string) string {
+	name = strings.ToLower(name)
+	best := ""
+	for _, codec := range []string{"ac3", "eac3", "e-ac3", "dts", "dts-hd", "truehd", "true-hd"} {
+		if strings.Contains(name, codec) && len(codec) > len(best) {
+			best = codec
+		}
+	}
+	return strings.ReplaceAll(best, "-", "")
+}
+
+// Covers reports whether every explicitly requested voiceover is already present.
+// An all-tracks request needs a recorded all-tracks download, not just one match.
+func (p AudioPreference) Covers(names []string, all bool) bool {
+	if p.IsAll() {
+		return all
+	}
+	tracks := make([]AudioTrackInfo, len(names))
+	for i, name := range names {
+		tracks[i] = AudioTrackInfo{Name: name}
+	}
+	for _, spec := range p.Specs {
+		found := false
+		for _, track := range tracks {
+			if spec.matches(track) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, include := range p.Include {
+		found := false
+		for _, track := range tracks {
+			if audioMatches(track, include) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return len(names) > 0
+}
+
+// IsGenericOriginalAudio recognizes unnamed original tracks from API language metadata.
+func IsGenericOriginalAudio(name, language, original string) bool {
+	return original != "" && language != "" && genericAudioName.MatchString(name) && normLang(language) == normLang(original)
 }

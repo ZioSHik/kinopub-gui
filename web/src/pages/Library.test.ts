@@ -94,7 +94,7 @@ function job(over: Record<string, unknown> = {}): any {
   return {
     id: "j1",
     url: "https://kino.pub/item/view/409",
-    status: "failed",
+    status: "completed",
     title: "Fear and Loathing",
     outputPath: "/downloads",
     dryRun: false,
@@ -119,6 +119,12 @@ describe("itemIdFromURL", () => {
 });
 
 describe("supersededByLibrary", () => {
+  it("keeps failed jobs because a different quality or audio may still be missing", () => {
+    expect(supersededByLibrary(job({status: "failed"}), [series({seriesId: "409"})])).toBe(false);
+  });
+  it("keeps downloads aimed at another output folder", () => {
+    expect(supersededByLibrary(job({outputPath: "/other"}), [series({seriesId: "409"})])).toBe(false);
+  });
   const entry = (over: Partial<LibrarySeries> = {}) =>
     series({ inputUrl: "https://kino.pub/item/view/409", episodes: [libEpisode(1, 1, true)], ...over });
 

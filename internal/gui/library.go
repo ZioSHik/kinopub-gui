@@ -21,15 +21,19 @@ const stateFileName = ".kinopub-state.json"
 
 // LibraryEpisode is one completed episode recorded in a state file.
 type LibraryEpisode struct {
-	Key         string    `json:"key"`
-	Season      int       `json:"season"`
-	Episode     int       `json:"episode"`
-	Title       string    `json:"title"`
-	Path        string    `json:"path"`
-	Exists      bool      `json:"exists"`
-	Bytes       int64     `json:"bytes"`
-	Resolution  string    `json:"resolution,omitempty"`
-	CompletedAt time.Time `json:"completedAt"`
+	Versions         []LibraryEpisode `json:"versions,omitempty"`
+	RequestedQuality string           `json:"requestedQuality,omitempty"`
+	Quality          string           `json:"quality,omitempty"`
+	AllAudio         bool             `json:"allAudio,omitempty"`
+	Key              string           `json:"key"`
+	Season           int              `json:"season"`
+	Episode          int              `json:"episode"`
+	Title            string           `json:"title"`
+	Path             string           `json:"path"`
+	Exists           bool             `json:"exists"`
+	Bytes            int64            `json:"bytes"`
+	Resolution       string           `json:"resolution,omitempty"`
+	CompletedAt      time.Time        `json:"completedAt"`
 	// Audio is the voiceover this episode was downloaded with, and AudioFallback
 	// marks it as a substitute taken because the requested one was not offered.
 	Audio         []string `json:"audio,omitempty"`
@@ -64,11 +68,15 @@ type LibraryResponse struct {
 // DownloadedEpisode is one already-downloaded episode of a kino.watch item, used
 // to mark which episodes the title card already has on disk.
 type DownloadedEpisode struct {
-	Key        string `json:"key"`
-	Season     int    `json:"season"`
-	Episode    int    `json:"episode"`
-	Resolution string `json:"resolution,omitempty"`
-	Exists     bool   `json:"exists"`
+	Path             string `json:"path,omitempty"`
+	RequestedQuality string `json:"requestedQuality,omitempty"`
+	Quality          string `json:"quality,omitempty"`
+	AllAudio         bool   `json:"allAudio,omitempty"`
+	Key              string `json:"key"`
+	Season           int    `json:"season"`
+	Episode          int    `json:"episode"`
+	Resolution       string `json:"resolution,omitempty"`
+	Exists           bool   `json:"exists"`
 	// What the episode actually came out in, so the card can show the voiceover
 	// on disk rather than the last one the user happened to pick elsewhere.
 	Audio         []string `json:"audio,omitempty"`
@@ -85,29 +93,35 @@ type DownloadedResponse struct {
 // downloadedForItem scans the library roots for downloads belonging to the given
 // kino.watch item id — matched on the recorded series id or, failing that, the id
 // embedded in the saved InputURL — and returns the episodes already on disk.
-func downloadedForItem(dirs []string, itemID string) DownloadedResponse {
+func downloadedForItem(dirs []string, itemID string, outputRoot ...string) DownloadedResponse {
 	resp := DownloadedResponse{ID: itemID, Episodes: []DownloadedEpisode{}}
 	if itemID == "" {
 		return resp
 	}
 	for _, series := range scanLibrary(dirs).Series {
+		if len(outputRoot) > 0 && outputRoot[0] != "" && canonicalOutput(filepath.Dir(series.Dir)) != canonicalOutput(outputRoot[0]) {
+			continue
+		}
 		if !seriesMatchesItem(series, itemID) {
 			continue
 		}
 		if resp.Dir == "" {
 			resp.Dir = series.Dir
 		}
-		for _, ep := range series.Episodes {
-			resp.Episodes = append(resp.Episodes, DownloadedEpisode{
-				Key:        ep.Key,
-				Season:     ep.Season,
-				Episode:    ep.Episode,
-				Resolution: ep.Resolution,
-				Exists:     ep.Exists,
+		for _, primary := range series.Episodes {
+			for _, ep := range append([]LibraryEpisode{primary}, primary.Versions...) {
+				resp.Episodes = append(resp.Episodes, DownloadedEpisode{
+					Path: ep.Path, RequestedQuality: ep.RequestedQuality, Quality: ep.Quality, AllAudio: ep.AllAudio,
+					Key:        ep.Key,
+					Season:     ep.Season,
+					Episode:    ep.Episode,
+					Resolution: ep.Resolution,
+					Exists:     ep.Exists,
 
-				Audio:         ep.Audio,
-				AudioFallback: ep.AudioFallback,
-			})
+					Audio:         ep.Audio,
+					AudioFallback: ep.AudioFallback,
+				})
+			}
 		}
 	}
 	return resp
@@ -283,7 +297,10 @@ func resolveLibraryDir(dir string, roots []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	abs = filepath.Clean(abs)
+	abs, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
 
 	if _, err := os.Stat(filepath.Join(abs, stateFileName)); err != nil {
 		return "", fmt.Errorf("not a kinopub download folder (no %s)", stateFileName)
@@ -291,6 +308,10 @@ func resolveLibraryDir(dir string, roots []string) (string, error) {
 
 	for _, root := range roots {
 		rabs, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rabs, err = filepath.EvalSymlinks(rabs)
 		if err != nil {
 			continue
 		}
@@ -330,47 +351,53 @@ func deleteLibraryEpisode(dir, key string, roots []string) error {
 	// The whole read-check-delete-write runs under the statestore path lock, so
 	// a download recording a completion into the same file at the same moment
 	// can neither be lost nor resurrect the record being deleted here.
-	lastOneGone := false
 	err = statestore.LockedUpdate(stateFile, func(state *domain.DownloadState) (bool, error) {
 		rec, ok := state.Completed[key]
 		if !ok {
 			return false, fmt.Errorf("episode %q not found in this download", key)
 		}
 
-		// Resolve the media file relative to the series folder and confine the
-		// deletion to it, so a tampered state file can't point us at an arbitrary
-		// path. A file that's already gone is fine — the goal is that it's absent.
-		fullPath := rec.Path
-		if fullPath != "" && !filepath.IsAbs(fullPath) {
-			fullPath = filepath.Join(abs, fullPath)
-		}
-		if fullPath != "" {
-			clean := filepath.Clean(fullPath)
-			rel, rerr := filepath.Rel(abs, clean)
-			if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		// Validate every version before deleting any. Resolve symlinked parents too,
+		// so a state record cannot remove a file outside the series via a directory link.
+		var paths []string
+		for _, file := range rec.Files() {
+			if file.Path == "" {
+				continue
+			}
+			full := file.Path
+			if !filepath.IsAbs(full) {
+				full = filepath.Join(abs, full)
+			}
+			parent, err := filepath.EvalSymlinks(filepath.Dir(full))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+			clean := filepath.Join(parent, filepath.Base(full))
+			rel, err := filepath.Rel(abs, clean)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				return false, fmt.Errorf("episode file is outside its series folder")
 			}
-			if err := os.Remove(clean); err != nil && !errors.Is(err, os.ErrNotExist) {
+			paths = append(paths, clean)
+		}
+		for _, path := range paths {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return false, fmt.Errorf("remove episode file: %w", err)
 			}
 		}
 
 		delete(state.Completed, key)
 
-		// Last episode gone → the whole folder goes below, no point writing the
-		// state file it is about to take with it.
-		if len(state.Completed) == 0 {
-			lastOneGone = true
-			return false, nil
-		}
 		return true, nil
 	})
 	if err != nil {
 		return err
 	}
-	if lastOneGone {
-		return os.RemoveAll(abs)
-	}
+	// Keep the empty state file: scans omit it, while a concurrent completion can
+	// still safely write to this folder. Never remove unrelated user files.
+
 	return nil
 }
 
@@ -437,31 +464,29 @@ func readLibraryState(stateFile string) (LibrarySeries, bool) {
 	}
 
 	for key, rec := range state.Completed {
-		fullPath := rec.Path
-		if fullPath != "" && !filepath.IsAbs(fullPath) {
-			fullPath = filepath.Join(dir, fullPath)
+		files := rec.Files()
+		var versions []LibraryEpisode
+		for _, file := range files {
+			ep := libraryFile(key, file, dir)
+			versions = append(versions, ep)
+			if ep.Exists {
+				item.TotalBytes += ep.Bytes
+			}
 		}
-		exists := fullPath != "" && fsutil.IsNonEmptyFile(fullPath)
-		item.Episodes = append(item.Episodes, LibraryEpisode{
-			Key:         key,
-			Season:      rec.Season,
-			Episode:     rec.Episode,
-			Title:       rec.Title,
-			Path:        fullPath,
-			Exists:      exists,
-			Bytes:       rec.Bytes,
-			Resolution:  rec.Resolution,
-			CompletedAt: rec.CompletedAt,
+		primary := versions[0]
+		// Prefer a playable version when the most recently recorded file was removed.
+		if !primary.Exists {
+			for i := 1; i < len(versions); i++ {
+				if versions[i].Exists {
+					versions[0], versions[i] = versions[i], versions[0]
+					primary = versions[0]
+					break
+				}
+			}
+		}
+		primary.Versions = versions[1:]
+		item.Episodes = append(item.Episodes, primary)
 
-			Audio:         rec.Audio,
-			AudioFallback: rec.AudioFallback,
-		})
-		// Only count what is actually on disk. The state file keeps a record for
-		// an episode whose file was deleted by hand, and counting its bytes made
-		// the card claim space the entry no longer occupies.
-		if exists {
-			item.TotalBytes += rec.Bytes
-		}
 		if rec.CompletedAt.After(item.UpdatedAt) {
 			item.UpdatedAt = rec.CompletedAt
 		}
@@ -478,4 +503,15 @@ func readLibraryState(stateFile string) (LibrarySeries, bool) {
 		return item.Episodes[a].Episode < item.Episodes[b].Episode
 	})
 	return item, true
+}
+
+func libraryFile(key string, rec domain.CompletedRec, dir string) LibraryEpisode {
+	path := rec.Path
+	if path != "" && !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	return LibraryEpisode{Key: key, Season: rec.Season, Episode: rec.Episode, Title: rec.Title,
+		Path: path, Exists: path != "" && fsutil.IsNonEmptyFile(path), Bytes: rec.Bytes,
+		Resolution: rec.Resolution, CompletedAt: rec.CompletedAt, Audio: rec.Audio,
+		AudioFallback: rec.AudioFallback, RequestedQuality: rec.RequestedQuality, Quality: rec.Quality, AllAudio: rec.AllAudio}
 }

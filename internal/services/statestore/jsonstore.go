@@ -44,6 +44,7 @@ type pathLock struct {
 // lockPath takes the shared lock for state-file path p and returns the function
 // that releases it. The returned function must be called exactly once.
 func lockPath(p string) func() {
+	p = fsutil.CanonicalPath(p)
 	pathLocks.mu.Lock()
 	l := pathLocks.m[p]
 	if l == nil {
@@ -220,13 +221,17 @@ func (s *JSONStore) parseLegacyState(data []byte, series domain.SeriesID) (domai
 // a legacy state loaded from the output root before migrating to a series dir.
 func resolveCompletedPaths(state *domain.DownloadState, dir string) {
 	for key, rec := range state.Completed {
-		if rec.Path == "" || filepath.IsAbs(rec.Path) {
-			continue
+		files := rec.Files()
+		for i := range files {
+			if files[i].Path != "" && !filepath.IsAbs(files[i].Path) {
+				files[i].Path = filepath.Join(dir, files[i].Path)
+				if absolute, err := filepath.Abs(files[i].Path); err == nil {
+					files[i].Path = absolute
+				}
+			}
 		}
-		rec.Path = filepath.Join(dir, rec.Path)
-		if absolute, err := filepath.Abs(rec.Path); err == nil {
-			rec.Path = absolute
-		}
+		rec = files[0]
+		rec.Versions = files[1:]
 		state.Completed[key] = rec
 	}
 }
@@ -264,22 +269,31 @@ func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) 
 	}
 
 	rec := domain.CompletedRec{
-		Season:      info.Key.Season,
-		Episode:     info.Key.Episode,
-		Path:        path,
-		Bytes:       info.Bytes,
-		CompletedAt: time.Now(),
-		Title:       info.Title,
-		Quality:     info.Quality,
-		Resolution:  info.Resolution,
-		BitRate:     info.BitRate,
-		PageLink:    info.PageLink,
-		MediaURL:    info.MediaURL,
+		RequestedQuality: info.RequestedQuality,
+		AllAudio:         info.AllAudio,
+		Season:           info.Key.Season,
+		Episode:          info.Key.Episode,
+		Path:             path,
+		Bytes:            info.Bytes,
+		CompletedAt:      time.Now(),
+		Title:            info.Title,
+		Quality:          info.Quality,
+		Resolution:       info.Resolution,
+		BitRate:          info.BitRate,
+		PageLink:         info.PageLink,
+		MediaURL:         info.MediaURL,
 
 		Audio:         info.Audio,
 		AudioFallback: info.AudioFallback,
 	}
 
+	if previous, ok := state.Completed[episodeKeyString(info.Key)]; ok {
+		for _, file := range previous.Files() {
+			if filepath.Clean(file.Path) != filepath.Clean(rec.Path) {
+				rec.Versions = append(rec.Versions, file)
+			}
+		}
+	}
 	state.Completed[episodeKeyString(info.Key)] = rec
 
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -372,17 +386,25 @@ func LockedUpdate(path string, mutate func(state *domain.DownloadState) (write b
 // restoring a movie or episode whose file was removed outside the app.
 func (s *JSONStore) IsCompleted(state domain.DownloadState, key domain.EpisodeKey) bool {
 	rec, ok := state.Completed[episodeKeyString(key)]
-	if !ok || rec.Path == "" {
+	if !ok {
 		return false
 	}
-	path := rec.Path
-	if !filepath.IsAbs(path) {
-		s.mu.Lock()
-		dir := filepath.Dir(s.statePath())
-		s.mu.Unlock()
-		path = filepath.Join(dir, path)
+	s.mu.Lock()
+	dir := filepath.Dir(s.statePath())
+	s.mu.Unlock()
+	for _, file := range rec.Files() {
+		path := file.Path
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		if fsutil.IsNonEmptyFile(path) {
+			return true
+		}
 	}
-	return fsutil.IsNonEmptyFile(path)
+	return false
 }
 
 // Verify that *JSONStore satisfies domain.StateStore at compile time.

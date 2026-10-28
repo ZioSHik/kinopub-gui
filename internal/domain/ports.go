@@ -169,6 +169,12 @@ type HLSDownloader interface {
 	SetAudioPreference(pref AudioPreference)
 }
 
+// HLSAudioDownloader adds missing audio without fetching the video again.
+type HLSAudioDownloader interface {
+	DownloadAudio(ctx context.Context, manifestURL string, quality Quality, outPath string,
+		key EpisodeKey, sink ProgressSink, existing []string) (*HLSDownloadResult, error)
+}
+
 // AudioChooser presents the available audio tracks to the user and returns the
 // indices to keep. Implementations may block for input up to a timeout; on
 // timeout or non-interactive input they should keep all tracks (return nil).
@@ -192,10 +198,12 @@ type SubtitleDownloader interface {
 
 // HLSDownloadResult contains info about a completed HLS download.
 type HLSDownloadResult struct {
-	Resolution  string // e.g. "1920x1080"
-	BitrateKbps int    // selected variant bitrate
-	Codec       string // "h264" or "h265"
-	TotalBytes  int64
+	PreserveExisting   bool   // input 0 is a completed container; retain its audio, subtitles and attachments
+	ExistingAudioCount int    // populated by the muxer from ffprobe
+	Resolution         string // e.g. "1920x1080"
+	BitrateKbps        int    // selected variant bitrate
+	Codec              string // "h264" or "h265"
+	TotalBytes         int64
 
 	// VideoPath is the local path to the concatenated video .ts file.
 	VideoPath string

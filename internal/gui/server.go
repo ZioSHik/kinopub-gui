@@ -898,7 +898,7 @@ func (s *Server) handleLibraryDownloaded(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	writeJSON(w, http.StatusOK, downloadedForItem(s.libraryDirs(), id))
+	writeJSON(w, http.StatusOK, downloadedForItem(s.libraryDirs(), id, r.URL.Query().Get("outputPath")))
 }
 
 func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {

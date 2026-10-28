@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/httpx"
 )
 
@@ -80,11 +81,7 @@ func (s *jobStore) save(jobs []persistedJob) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return fsutil.AtomicWrite(s.path, data, 0600)
 }
 
 // persistedFrom snapshots a Job into its on-disk form. Caller must NOT hold j.mu.

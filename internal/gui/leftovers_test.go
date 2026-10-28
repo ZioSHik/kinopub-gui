@@ -237,3 +237,15 @@ func TestLeftovers_UnknownJob(t *testing.T) {
 		t.Error("leftovers should report an unknown job as missing")
 	}
 }
+
+func TestJobTempPathsRecognizeQualitySuffix(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "S01E02-1080p-h265.mkv.ts.hls-tmp")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	got := jobTempPaths(dir, map[string]bool{"S01E02": true})
+	if len(got) != 1 || got[0] != path {
+		t.Fatalf("quality cache lost: %v", got)
+	}
+}

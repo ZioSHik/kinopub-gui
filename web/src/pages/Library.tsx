@@ -92,9 +92,13 @@ export function supersededByLibrary(job: JobView, series: LibrarySeries[]): bool
   // No planned episodes means the run died before resolving; there is nothing to
   // claim is already downloaded.
   if (job.episodes.length === 0) return false;
+  if (job.status !== "completed") return false;
   const id = itemIdFromURL(job.url);
   if (!id) return false;
-  const entry = series.find((s) => itemIdOf(s) === id);
+  const output = job.outputPath.replace(/\\/g, "/").replace(/\/$/, "");
+  const entry = series.find(
+    (s) => itemIdOf(s) === id && (!output || s.dir.replace(/\\/g, "/").startsWith(output + "/")),
+  );
   if (!entry) return false;
   const onDisk = new Set(
     (entry.episodes ?? []).filter((e) => e.exists).map((e) => `${e.season}:${e.episode}`),
@@ -196,6 +200,30 @@ function useSeriesActions(s: LibrarySeries, onDeleted: () => void) {
   return { openPath, remove, removeEpisode, deleting, removingKey };
 }
 
+function FileVersions({ episode }: { episode: LibraryEpisode }) {
+  const { toast } = useApp();
+  const { t } = useI18n();
+  if (!episode.versions?.length) return null;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {[episode, ...episode.versions].map((file) => (
+        <button
+          key={file.path}
+          className="rounded bg-white/5 px-2 py-1 text-xs text-slate-400 disabled:opacity-40"
+          title={[file.resolution, ...(file.audio || [])].filter(Boolean).join(" · ")}
+          disabled={!file.exists}
+          onClick={(event) => {
+            event.stopPropagation();
+            void api.openPath(file.path).catch((e) => toast(e.message, "error"));
+          }}
+        >
+          {t("Play")} · {file.resolution || file.requestedQuality || file.path.split(".").pop()}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 // EpisodeRow is one file inside an episode list.
 function EpisodeRow({
   e,
@@ -229,6 +257,7 @@ function EpisodeRow({
       <span className={clsx("min-w-0 flex-1 truncate", e.exists ? "text-slate-300" : "text-slate-500 line-through")}>
         {e.title || t("Episode {n}", { n: e.episode })}
       </span>
+      <FileVersions episode={e} />
       {e.resolution && <span className="hidden shrink-0 text-[11px] text-slate-500 sm:inline">{e.resolution}</span>}
       <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500">{bytes(e.bytes)}</span>
       {/* Row actions stay visible on touch screens (no hover) and fade in on desktop. */}
@@ -453,6 +482,8 @@ function SeriesCard({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
             <span className="truncate">{s.dir}</span>
           </button>
 
+          {single && <FileVersions episode={single} />}
+
           {/* Actions live on the card itself — only the episode list is behind a cut. */}
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
             {hasList && (
@@ -643,6 +674,7 @@ function SeriesTile({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
       <p className="mt-2 truncate text-sm font-semibold text-slate-100" title={s.title}>
         {s.title}
       </p>
+      {single && <FileVersions episode={single} />}
       {/* Empty meta lines are omitted rather than filled: a blank filler row read
           as a hole under the title. Grid rows size to their tallest tile, so the
           posters in a row still line up. */}

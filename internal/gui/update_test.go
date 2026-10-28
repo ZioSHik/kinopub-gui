@@ -1,6 +1,12 @@
 package gui
 
-import "testing"
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestIsNewer(t *testing.T) {
 	cases := []struct {
@@ -42,5 +48,13 @@ func TestAssetNameMatchesReleaseConvention(t *testing.T) {
 	got := assetName()
 	if len(got) < len("kinopub-gui-") || got[:len("kinopub-gui-")] != "kinopub-gui-" {
 		t.Errorf("assetName() = %q, want kinopub-gui-* prefix", got)
+	}
+}
+
+func TestDownloadToRejectsOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "oversized") }))
+	defer srv.Close()
+	if _, err := downloadTo(context.Background(), srv.Client(), srv.URL, io.Discard, 3); err == nil {
+		t.Fatal("oversized update accepted as a truncated success")
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/httpx"
 )
 
@@ -153,7 +154,7 @@ func (s *settingsStore) load() {
 func (s *settingsStore) get() Settings {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cur
+	return cloneSettings(s.cur)
 }
 
 func (s *settingsStore) save(in Settings) (Settings, error) {
@@ -163,18 +164,23 @@ func (s *settingsStore) save(in Settings) (Settings, error) {
 	if in.Container != "mp4" {
 		in.Container = "mkv"
 	}
-	s.cur = in
+	in = cloneSettings(in)
 	if s.path == "" {
-		return s.cur, nil
+		s.cur = in
+		return cloneSettings(s.cur), nil
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return s.cur, err
+		return cloneSettings(s.cur), err
 	}
 	data, err := json.MarshalIndent(in, "", "  ")
 	if err != nil {
-		return s.cur, err
+		return cloneSettings(s.cur), err
 	}
-	return s.cur, os.WriteFile(s.path, data, 0o644)
+	if err := fsutil.AtomicWrite(s.path, data, 0600); err != nil {
+		return cloneSettings(s.cur), err
+	}
+	s.cur = in
+	return cloneSettings(s.cur), nil
 }
 
 // AudioSpecDTO is one exact audio-track selection rule sent by the GUI picker:
@@ -341,4 +347,9 @@ func splitShellArgs(s string) []string {
 	}
 	flush()
 	return args
+}
+
+func cloneSettings(s Settings) Settings {
+	s.LibraryDirs = append([]string(nil), s.LibraryDirs...)
+	return s
 }

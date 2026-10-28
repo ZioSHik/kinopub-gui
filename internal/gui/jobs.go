@@ -3,7 +3,6 @@ package gui
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/app/kinopub"
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/logx"
 	"github.com/ZioSHik/kinopub-gui/internal/services/hlsdownloader"
 	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
@@ -117,29 +117,29 @@ type AudioRequestView struct {
 
 // JobView is the full serializable snapshot of a job sent to the UI.
 type JobView struct {
-	ID           string            `json:"id"`
-	URL          string            `json:"url"`
-	Status       string            `json:"status"`
-	Title        string            `json:"title"`
-	PosterURL    string            `json:"posterUrl,omitempty"`
-	OutputPath   string            `json:"outputPath"`
-	DryRun       bool              `json:"dryRun"`
-	Quality      string            `json:"quality"`
-	CreatedAt    time.Time         `json:"createdAt"`
-	StartedAt    *time.Time        `json:"startedAt,omitempty"`
-	FinishedAt   *time.Time        `json:"finishedAt,omitempty"`
-	Plan     *PlanView     `json:"plan,omitempty"`
-	Episodes []EpisodeView `json:"episodes"`
+	ID         string        `json:"id"`
+	URL        string        `json:"url"`
+	Status     string        `json:"status"`
+	Title      string        `json:"title"`
+	PosterURL  string        `json:"posterUrl,omitempty"`
+	OutputPath string        `json:"outputPath"`
+	DryRun     bool          `json:"dryRun"`
+	Quality    string        `json:"quality"`
+	CreatedAt  time.Time     `json:"createdAt"`
+	StartedAt  *time.Time    `json:"startedAt,omitempty"`
+	FinishedAt *time.Time    `json:"finishedAt,omitempty"`
+	Plan       *PlanView     `json:"plan,omitempty"`
+	Episodes   []EpisodeView `json:"episodes"`
 	// SelectedEpisodes is the run's explicit episode selection ("S1E2" keys),
 	// exposed so the browser half of the duplicate rule (web/src/lib/queue.ts)
 	// can reason about a job that has not resolved its plan yet the same way the
 	// server's queueCoverage does — instead of locking the whole title while a
 	// one-episode job waits for a slot.
-	SelectedEpisodes []string     `json:"selectedEpisodes,omitempty"`
-	Summary          *SummaryView `json:"summary,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	PendingAudio *AudioRequestView `json:"pendingAudio,omitempty"`
-	Logs         []LogEntry        `json:"logs"`
+	SelectedEpisodes []string          `json:"selectedEpisodes,omitempty"`
+	Summary          *SummaryView      `json:"summary,omitempty"`
+	Error            string            `json:"error,omitempty"`
+	PendingAudio     *AudioRequestView `json:"pendingAudio,omitempty"`
+	Logs             []LogEntry        `json:"logs"`
 }
 
 // Job is the live, mutable server-side representation of a download run.
@@ -155,7 +155,7 @@ type Job struct {
 	// seriesDir is the folder the engine reported writing into. It cannot be
 	// derived from title + outputPath: a job started from a search result keeps
 	// that view's short title while the folder carries the full one.
-	seriesDir string
+	seriesDir  string
 	dryRun     bool
 	quality    string
 	createdAt  time.Time
@@ -791,10 +791,7 @@ func (m *JobManager) outputPaths() []string {
 // it: a dry run writes nothing and must not block (or be blocked by) a real
 // download of the same title.
 func runSignature(cfg domain.RunConfig) string {
-	out := cfg.OutputPath
-	if out != "" {
-		out = filepath.Clean(out)
-	}
+	out := canonicalOutput(cfg.OutputPath)
 	return strings.Join([]string{
 		downloadTarget(cfg.InputURL),
 		out,
@@ -929,7 +926,7 @@ func (m *JobManager) queueCoverage(cfg domain.RunConfig) (covered map[string]boo
 	if cfg.DryRun {
 		return covered, false, JobView{}, false
 	}
-	want := filepath.Clean(cfg.OutputPath)
+	want := canonicalOutput(cfg.OutputPath)
 	wantURL := downloadTarget(cfg.InputURL)
 	m.mu.RLock()
 	jobs := make([]*Job, 0, len(m.jobs))
@@ -942,7 +939,7 @@ func (m *JobManager) queueCoverage(cfg domain.RunConfig) (covered map[string]boo
 	for _, j := range jobs {
 		j.mu.Lock()
 		if !isActiveStatus(j.status) || j.cfg.DryRun ||
-			downloadTarget(j.cfg.InputURL) != wantURL || filepath.Clean(j.cfg.OutputPath) != want {
+			downloadTarget(j.cfg.InputURL) != wantURL || canonicalOutput(j.cfg.OutputPath) != want {
 			j.mu.Unlock()
 			continue
 		}
@@ -1031,7 +1028,7 @@ func (m *JobManager) dedupeQueue() int {
 			j.mu.Unlock()
 			continue
 		}
-		t := target{downloadTarget(j.cfg.InputURL), filepath.Clean(j.cfg.OutputPath)}
+		t := target{downloadTarget(j.cfg.InputURL), canonicalOutput(j.cfg.OutputPath)}
 		mine, mineWhole := jobCoverageLocked(j)
 		seen, exists := claimed[t]
 		// The first card for a target keeps everything, and so does one that is
@@ -1939,3 +1936,6 @@ func containsKey(keys []domain.EpisodeKey, k domain.EpisodeKey) bool {
 	}
 	return false
 }
+
+// Canonicalize existing parents too, including a not-yet-created output folder.
+func canonicalOutput(path string) string { return fsutil.CanonicalPath(path) }

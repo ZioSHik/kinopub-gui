@@ -76,17 +76,27 @@ func TestDeleteLibraryEpisode_RemovesFileAndRecord(t *testing.T) {
 	}
 }
 
-func TestDeleteLibraryEpisode_LastEpisodeRemovesFolder(t *testing.T) {
+func TestDeleteLibraryEpisode_LastEpisodePreservesUnrelatedFiles(t *testing.T) {
 	root := t.TempDir()
 	dir := writeSeries(t, root, map[string]domain.CompletedRec{
 		"S1E1": {Season: 1, Episode: 1, Path: "s1e1.mkv", Bytes: 1},
 	})
 
-	if err := deleteLibraryEpisode(dir, "S1E1", []string{root}); err != nil {
-		t.Fatalf("deleteLibraryEpisode: %v", err)
+	unrelated := filepath.Join(dir, "personal.txt")
+	if err := os.WriteFile(unrelated, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Errorf("series folder should be gone after last episode (err=%v)", err)
+	if err := deleteLibraryEpisode(dir, "S1E1", []string{root}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(unrelated); err != nil || string(data) != "keep" {
+		t.Fatalf("unrelated file removed: %q %v", data, err)
+	}
+	if len(readCompleted(t, dir)) != 0 {
+		t.Fatal("last completion was retained")
+	}
+	if _, ok := readLibraryState(filepath.Join(dir, stateFileName)); ok {
+		t.Fatal("empty folder appears in library")
 	}
 }
 

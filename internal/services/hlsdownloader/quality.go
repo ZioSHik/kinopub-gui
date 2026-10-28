@@ -182,8 +182,20 @@ func selectExplicit(variants []Variant, pref string) (Variant, error) {
 	}
 
 	if len(candidates) == 0 {
-		// No exact match — find closest height.
-		return closestToHeight(variants, wantHeight), nil
+		// A missing resolution may fall back, but an explicit codec must survive.
+		fallback := variants
+		if wantCodec != "" {
+			fallback = nil
+			for _, variant := range variants {
+				if (wantCodec == "h264" && variant.IsH264()) || (wantCodec == "h265" && variant.IsH265()) {
+					fallback = append(fallback, variant)
+				}
+			}
+			if len(fallback) == 0 {
+				return Variant{}, fmt.Errorf("requested video codec %s is unavailable", wantCodec)
+			}
+		}
+		return closestToHeight(fallback, wantHeight), nil
 	}
 	if wantCodec == "" {
 		var h264 []Variant

@@ -254,7 +254,8 @@ func TestResolveLibraryDir(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected ok, got %v", err)
 		}
-		if abs != filepath.Clean(good) {
+		expected, _ := filepath.EvalSymlinks(good)
+		if abs != expected {
 			t.Errorf("abs = %q, want %q", abs, good)
 		}
 	})

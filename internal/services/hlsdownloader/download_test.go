@@ -440,6 +440,13 @@ func TestDownloadEpisode_ResumeSkipsExistingSegments(t *testing.T) {
 
 	// Pre-create the temp dir + a finished seg_0 so resume can skip it.
 	segDir := filepath.Join(outPath+".hls-tmp", "video")
+	playlist, err := FetchMediaPlaylist(context.Background(), srv.Client(), srv.URL+"/720/media.m3u8", domain.RequestAuth{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareTrackCache(segDir, playlist); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(segDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -512,6 +519,13 @@ func TestDownloadEpisode_ResumeBaselineReportedFirst(t *testing.T) {
 
 	// A previous attempt left seg_0 (8 bytes) on disk.
 	segDir := filepath.Join(outPath+".hls-tmp", "video")
+	playlist, err := FetchMediaPlaylist(context.Background(), srv.Client(), srv.URL+"/720/media.m3u8", domain.RequestAuth{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareTrackCache(segDir, playlist); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(segDir, 0755); err != nil {
 		t.Fatal(err)
 	}

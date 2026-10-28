@@ -195,6 +195,15 @@ func (d *Downloader) remuxLocal(ctx context.Context, job domain.Job, rawPath str
 // from separate files; this maps them all together with -c copy and applies
 // per-track labels/languages.
 func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLSDownloadResult) error {
+	if hls.PreserveExisting {
+		count, err := d.existingAudioCount(ctx, hls.VideoPath)
+		if err != nil {
+			return err
+		}
+		copy := *hls
+		copy.ExistingAudioCount = count
+		hls = &copy
+	}
 	for _, sub := range hls.SubtitleTracks {
 		if sub.TimestampOffset == nil {
 			continue
@@ -241,15 +250,7 @@ func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLS
 // hlsVideoStart reads the same input start timestamp ffmpeg subtracts during
 // muxing. ffprobe is installed alongside ffmpeg by the managed tool installer.
 func (d *Downloader) hlsVideoStart(ctx context.Context, path string) (time.Duration, error) {
-	probe := "ffprobe"
-	if strings.EqualFold(filepath.Ext(d.ffmpegPath), ".exe") {
-		probe += ".exe"
-	}
-	if dir := filepath.Dir(d.ffmpegPath); dir != "." {
-		if sibling := filepath.Join(dir, probe); fileExists(sibling) {
-			probe = sibling
-		}
-	}
+	probe := d.probePath()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var output bytes.Buffer
@@ -432,3 +433,34 @@ func estimateDuration(job domain.Job) time.Duration {
 type noopSink struct{}
 
 func (noopSink) TrackProgress(_ domain.EpisodeKey, _ domain.TrackRef, _ int) {}
+
+func (d *Downloader) probePath() string {
+	probe := "ffprobe"
+	if strings.EqualFold(filepath.Ext(d.ffmpegPath), ".exe") {
+		probe += ".exe"
+	}
+	if dir := filepath.Dir(d.ffmpegPath); dir != "." {
+		if sibling := filepath.Join(dir, probe); fileExists(sibling) {
+			probe = sibling
+		}
+	}
+	return probe
+}
+
+func (d *Downloader) existingAudioCount(ctx context.Context, path string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	if err := d.run(ctx, d.probePath(), []string{"-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "json", path}, nil, &output); err != nil {
+		return 0, fmt.Errorf("probe existing audio: %w", err)
+	}
+	var result struct {
+		Streams []struct {
+			Index int `json:"index"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		return 0, fmt.Errorf("parse existing audio: %w", err)
+	}
+	return len(result.Streams), nil
+}

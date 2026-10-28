@@ -24,11 +24,15 @@ type SeriesMetadata struct {
 
 // CompletedRec records metadata about a completed episode download.
 type CompletedRec struct {
-	Season      int       `json:"season"`
-	Episode     int       `json:"episode"`
-	Path        string    `json:"path"`
-	Bytes       int64     `json:"bytes"`
-	CompletedAt time.Time `json:"completed_at"`
+	// Versions holds earlier files in other qualities/containers, without nesting.
+	Versions         []CompletedRec `json:"versions,omitempty"`
+	RequestedQuality string         `json:"requested_quality,omitempty"`
+	AllAudio         bool           `json:"all_audio,omitempty"`
+	Season           int            `json:"season"`
+	Episode          int            `json:"episode"`
+	Path             string         `json:"path"`
+	Bytes            int64          `json:"bytes"`
+	CompletedAt      time.Time      `json:"completed_at"`
 
 	// Episode metadata for recovery.
 	Title   string `json:"title,omitempty"`
@@ -48,15 +52,17 @@ type CompletedRec struct {
 
 // CompletedInfo carries all information needed to record a completed download.
 type CompletedInfo struct {
-	Key        EpisodeKey
-	Path       string
-	Bytes      int64
-	Title      string
-	Quality    string
-	Resolution string // actual resolution from ffprobe
-	BitRate    int    // video bitrate in kb/s from ffprobe
-	PageLink   string
-	MediaURL   string
+	RequestedQuality string
+	AllAudio         bool
+	Key              EpisodeKey
+	Path             string
+	Bytes            int64
+	Title            string
+	Quality          string
+	Resolution       string // actual resolution from ffprobe
+	BitRate          int    // video bitrate in kb/s from ffprobe
+	PageLink         string
+	MediaURL         string
 	// Audio names the voiceover tracks actually downloaded, and AudioFallback
 	// marks them as a substitute for a requested voiceover this episode did not
 	// offer. Both come from the HLS download result.
