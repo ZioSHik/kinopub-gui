@@ -43,6 +43,7 @@ import { initialEpisodeSelection, isQueued, nothingLeftToQueue, queueCoverage } 
 import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
 import { Player } from "./Player";
+import { AudioPicker } from "./AudioPicker";
 
 const QUALITIES = ["", "2160p", "1080p", "720p", "480p", "360p"];
 
@@ -86,7 +87,7 @@ export function TitleDetail({
   const [similar, setSimilar] = useState<DiscoverItem[]>([]);
 
   const [quality, setQuality] = useState(settings.quality);
-  // Selected озвучка labels. Empty set → keep every track.
+  // Selected voiceover labels. An empty selection waits for an explicit choice.
   const [audioSel, setAudioSel] = useState<Set<string>>(new Set());
   // True when a remembered voiceover existed but isn't available here, so the
   // user is prompted to pick another.
@@ -94,9 +95,14 @@ export function TitleDetail({
   // Episodes of this title already on disk, keyed by episode key. Carries what
   // each one was downloaded in — resolution and voiceover.
   const [downloadedFiles, setDownloadedFiles] = useState<DownloadedEpisode[]>([]);
-  const matchingDownloads = useMemo(() => new Map(downloadedFiles
-    .filter((e) => matchesDownload(e, quality, settings.container, detail?.audios || [], audioSel))
-    .map((e) => [e.key, e])), [downloadedFiles, quality, settings.container, detail, audioSel]);
+  const matchingDownloads = useMemo(() => {
+    // Until a voiceover is chosen, only the video tier determines what is
+    // already on disk. Empty audio must not mark existing episodes as missing.
+    const audios = audioSel.size ? detail?.audios || [] : [];
+    return new Map(downloadedFiles
+      .filter((file) => matchesDownload(file, quality, settings.container, audios, audioSel))
+      .map((file) => [file.key, file]));
+  }, [downloadedFiles, quality, settings.container, detail, audioSel]);
   const downloaded = useMemo(() => existingDownloads(downloadedFiles), [downloadedFiles]);
   const selectionVersion = useRef("");
   // Whether the on-disk scan has answered. The episode selection waits for it:
@@ -263,6 +269,7 @@ export function TitleDetail({
       return next;
     });
 
+  const needsAudio = !!detail?.audios.length && audioSel.size === 0;
   const allAudioOn = !!detail && detail.audios.length > 0 && audioSel.size === detail.audios.length;
   const toggleAllAudio = () =>
     setAudioSel(() => (allAudioOn ? new Set() : new Set((detail?.audios || []).map((a) => a.label))));
@@ -578,27 +585,7 @@ export function TitleDetail({
                     {t("Voiceover list appears after sign-in / for available titles.")}
                   </p>
                 ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {detail.audios.map((a) => {
-                      const on = audioSel.has(a.label);
-                      return (
-                        <button
-                          key={a.label}
-                          onClick={() => toggleAudio(a.label)}
-                          aria-pressed={on}
-                          className={clsx(
-                            "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                            on
-                              ? "border-gold-500/50 bg-gold-500/[0.14] text-gold-200"
-                              : "border-white/[0.08] bg-white/[0.02] text-slate-400 hover:border-white/20 hover:text-slate-200",
-                          )}
-                        >
-                          {on && <Check className="h-3 w-3 shrink-0" strokeWidth={3} />}
-                          {a.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <AudioPicker audios={detail.audios} selected={audioSel} onToggle={toggleAudio} />
                 )}
               </Section>
 
@@ -636,7 +623,7 @@ export function TitleDetail({
                     </>
                   }
                 >
-                  {downloaded.size > 0 && matchingDownloads.size !== downloaded.size && (
+                  {!needsAudio && downloaded.size > 0 && matchingDownloads.size !== downloaded.size && (
                     <p className="mb-2 text-xs text-slate-400">
                       {t("{n} of {m} downloaded episodes match the selected quality and voiceover", {
                         n: matchingDownloads.size, m: downloaded.size,
@@ -749,6 +736,7 @@ export function TitleDetail({
                                     <button
                                       onClick={() => toggleEpisode(key)}
                                       disabled={qed}
+                                      aria-pressed={on}
                                       title={qed ? t("In the queue") : e.watched ? t("Watched") : undefined}
                                       className="flex flex-1 items-center gap-2.5 px-3 py-2 text-left disabled:cursor-default"
                                     >
@@ -861,7 +849,12 @@ export function TitleDetail({
                     </option>
                   ))}
                 </select>
-                {nothingLeft ? (
+                {needsAudio ? (
+                  <button className="btn-primary" disabled>
+                    <Mic2 className="h-4 w-4" />
+                    {t("Choose a voiceover")}
+                  </button>
+                ) : nothingLeft ? (
                   <button
                     className="btn border border-emerald-500/40 bg-emerald-500/[0.16] text-emerald-200 hover:bg-emerald-500/[0.24]"
                     onClick={openQueue}

@@ -45,3 +45,22 @@ it("starts with the most common existing voiceover rather than requesting a unio
   expect(screen.getByRole("button",{name: "Studio B"})).toHaveAttribute("aria-pressed","false");
   expect(screen.getByText("7 of 8 downloaded episodes match the selected quality and voiceover")).toBeInTheDocument();
 });
+
+it("clearing all voiceovers keeps existing video unchecked and explains why downloading is disabled", async () => {
+  const detail = await mocks.detail();
+  detail.seasons[0].episodes.push({season: 1,episode: 9,title: "Episode 9",watched: false});
+  detail.episodeCount = 9;
+  mocks.detail.mockResolvedValue(detail);
+  render(<I18nProvider><TitleDetail id="77890" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  // Studio B was seeded from the one recording with audio metadata.
+  fireEvent.click(screen.getByRole("button",{name: "Studio B"}));
+  expect(screen.getByRole("button",{name: "Choose a voiceover"})).toBeDisabled();
+  expect(screen.getByText("8 of 9 downloaded")).toBeInTheDocument();
+  for (let number = 1; number <= 8; number++) {
+    expect(screen.getByRole("button",{name: new RegExp(`^${number} Episode ${number} `)}))
+      .toHaveAttribute("aria-pressed","false");
+  }
+  expect(screen.getByRole("button",{name: /^9 Episode 9/})).toHaveAttribute("aria-pressed","true");
+  expect(screen.queryByText(/downloaded episodes match the selected quality and voiceover/)).not.toBeInTheDocument();
+});
