@@ -342,7 +342,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		}
 		present := false
 		for _, name := range existing {
-			if strings.EqualFold(name, a.Name) {
+			if domain.SameAudioRendition(name, a.Name) {
 				present = true
 				break
 			}

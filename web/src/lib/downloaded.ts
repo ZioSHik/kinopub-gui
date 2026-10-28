@@ -20,3 +20,30 @@ export function matchesDownload(ep: DownloadedEpisode, quality: string, containe
   const found = new Set(matchDownloadedAudio(wanted, ep.audio || []));
   return wanted.every((a) => found.has(a));
 }
+
+// The disk inventory is independent of the next download's selected tracks.
+export function existingDownloads(files: DownloadedEpisode[]): Map<string, DownloadedEpisode> {
+  const episodes = new Map<string, DownloadedEpisode>();
+  for (const file of files) {
+    if (!file.exists) continue;
+    const current = episodes.get(file.key);
+    if (!current || (!current.audio?.length && file.audio?.length)) episodes.set(file.key, file);
+  }
+  return episodes;
+}
+
+// Seed the picker from the most common recorded track combination. Taking the
+// union across episodes would silently request both dubs in a mixed season.
+export function preferredRecordedAudio(audios: DiscoverAudio[], files: DownloadedEpisode[]): DiscoverAudio[] {
+  const profiles = new Map<string, { audios: DiscoverAudio[]; episodes: Set<string> }>();
+  for (const file of files) {
+    if (!file.exists) continue;
+    const matched = matchDownloadedAudio(audios, file.audio || []);
+    if (!matched.length) continue;
+    const key = JSON.stringify(matched.map((audio) => audio.label).sort());
+    const profile = profiles.get(key) || { audios: matched, episodes: new Set<string>() };
+    profile.episodes.add(file.key);
+    profiles.set(key, profile);
+  }
+  return [...profiles.values()].sort((a, b) => b.episodes.size - a.episodes.size)[0]?.audios || [];
+}

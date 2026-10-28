@@ -543,3 +543,17 @@ func (p AudioPreference) Covers(names []string, all bool) bool {
 func IsGenericOriginalAudio(name, language, original string) bool {
 	return original != "" && language != "" && genericAudioName.MatchString(name) && normLang(language) == normLang(original)
 }
+
+var audioTrackOrdinal = regexp.MustCompile(`^\s*\d+\.\s*`)
+var audioDuplicateOrdinal = regexp.MustCompile(`\s+\(\d+\)$`)
+
+// SameAudioRendition ignores numbering added by the source or by the muxer,
+// while preserving the studio, language and codec in a track's identity.
+func SameAudioRendition(a, b string) bool {
+	canonical := func(name string) string {
+		name = audioTrackOrdinal.ReplaceAllString(strings.TrimSpace(name), "")
+		name = audioDuplicateOrdinal.ReplaceAllString(name, "")
+		return strings.ToLower(name)
+	}
+	return canonical(a) == canonical(b)
+}

@@ -32,13 +32,13 @@ import { pushRoute } from "../router";
 import {
   audioIdentity,
   isTaggedCodec,
-  matchDownloadedAudio,
   matchRememberedAudio,
   readAudioPref,
   TAGGED_CODECS,
   writeAudioPref,
 } from "../lib/audio";
-import { matchesDownload } from "../lib/downloaded";
+import { voiceoverLabels } from "../lib/libraryAudio";
+import { existingDownloads, matchesDownload, preferredRecordedAudio } from "../lib/downloaded";
 import { initialEpisodeSelection, isQueued, nothingLeftToQueue, queueCoverage } from "../lib/queue";
 import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
@@ -63,7 +63,7 @@ function epKey(season: number, episode: number) {
 // resolution and voiceover — and flags the voiceover as a substitute when the
 // requested one wasn't offered for that episode.
 function downloadedHint(ep: DownloadedEpisode, t: (k: string, v?: Record<string, string | number>) => string): string {
-  const bits = [ep.resolution, (ep.audio || []).join(", ")].filter(Boolean) as string[];
+  const bits = [ep.resolution, voiceoverLabels(ep.audio).join(", ")].filter(Boolean) as string[];
   const base = bits.length ? t("Downloaded · {details}", { details: bits.join(" · ") }) : t("Downloaded");
   return ep.audioFallback ? `${base} — ${t("voiceover substituted")}` : base;
 }
@@ -94,9 +94,10 @@ export function TitleDetail({
   // Episodes of this title already on disk, keyed by episode key. Carries what
   // each one was downloaded in — resolution and voiceover.
   const [downloadedFiles, setDownloadedFiles] = useState<DownloadedEpisode[]>([]);
-  const downloaded = useMemo(() => new Map(downloadedFiles
+  const matchingDownloads = useMemo(() => new Map(downloadedFiles
     .filter((e) => matchesDownload(e, quality, settings.container, detail?.audios || [], audioSel))
     .map((e) => [e.key, e])), [downloadedFiles, quality, settings.container, detail, audioSel]);
+  const downloaded = useMemo(() => existingDownloads(downloadedFiles), [downloadedFiles]);
   const selectionVersion = useRef("");
   // Whether the on-disk scan has answered. The episode selection waits for it:
   // seeding before it lands would tick episodes that are already downloaded.
@@ -218,14 +219,14 @@ export function TitleDetail({
   useEffect(() => {
     if (!detail || !downloadedReady || seeded) return;
     setSeeded(true);
-    setEpSel(initialEpisodeSelection(allEpKeys, downloaded, queuedKeys));
+    setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
 
     if (!detail.audios.length) return;
     // What to pre-tick, most truthful source first: the voiceover the episodes on
     // disk are actually in, then this title's own remembered choice, then the
     // last choice made anywhere as a mere starting guess.
     const onDisk = downloadedFiles.flatMap((e) => e.audio || []);
-    const fromDisk = matchDownloadedAudio(detail.audios, onDisk);
+    const fromDisk = preferredRecordedAudio(detail.audios, downloadedFiles);
     const remembered = readAudioPref(id);
     const matched = fromDisk.length ? fromDisk : matchRememberedAudio(detail.audios, remembered.prefs);
 
@@ -243,7 +244,7 @@ export function TitleDetail({
     // was what put the message on titles the user had never touched.
     setAudioSel(new Set());
     setAudioPrefMissing(onDisk.length > 0 || (remembered.scoped && remembered.prefs.length > 0));
-  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, downloadedFiles, queuedKeys, id]);
+  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, matchingDownloads, downloadedFiles, queuedKeys, id]);
 
   // A changed quality or voiceover needs a fresh missing-episode selection.
   // Keep manual episode choices while this selection remains unchanged.
@@ -252,8 +253,8 @@ export function TitleDetail({
     const signature = JSON.stringify([id, quality, settings.container, [...audioSel].sort()]);
     if (selectionVersion.current === signature) return;
     selectionVersion.current = signature;
-    setEpSel(initialEpisodeSelection(allEpKeys, downloaded, queuedKeys));
-  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, downloaded, queuedKeys]);
+    setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
+  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, matchingDownloads, queuedKeys]);
 
   const toggleAudio = (label: string) =>
     setAudioSel((cur) => {
@@ -302,8 +303,8 @@ export function TitleDetail({
   // finishes instantly having done nothing. The button stops offering to start
   // anything and points at the page holding the answer to "where is it then?".
   const nothingLeft = isSerial
-    ? nothingLeftToQueue(allEpKeys, downloaded, queuedKeys)
-    : coverage.whole || coverage.refs.size > 0 || downloaded.size > 0;
+    ? nothingLeftToQueue(allEpKeys, matchingDownloads, queuedKeys)
+    : coverage.whole || coverage.refs.size > 0 || matchingDownloads.size > 0;
   // Which of the two it is, so the button can say the true one.
   const queuedSomething = isSerial ? queuedCount > 0 : coverage.whole || coverage.refs.size > 0;
 
@@ -584,6 +585,7 @@ export function TitleDetail({
                         <button
                           key={a.label}
                           onClick={() => toggleAudio(a.label)}
+                          aria-pressed={on}
                           className={clsx(
                             "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
                             on
@@ -611,9 +613,9 @@ export function TitleDetail({
                       {downloaded.size > 0 && (
                         <button
                           className="text-slate-400 transition hover:text-sky-300"
-                          title={t("Select only episodes not yet downloaded")}
+                          title={t("Select episodes missing the selected quality or voiceover")}
                           onClick={() =>
-                            setEpSel(new Set(allEpKeys.filter((k) => !downloaded.has(k) && !queuedKeys.has(k))))
+                            setEpSel(new Set(allEpKeys.filter((k) => !matchingDownloads.has(k) && !queuedKeys.has(k))))
                           }
                         >
                           {t("Only missing")}
@@ -634,6 +636,13 @@ export function TitleDetail({
                     </>
                   }
                 >
+                  {downloaded.size > 0 && matchingDownloads.size !== downloaded.size && (
+                    <p className="mb-2 text-xs text-slate-400">
+                      {t("{n} of {m} downloaded episodes match the selected quality and voiceover", {
+                        n: matchingDownloads.size, m: downloaded.size,
+                      })}
+                    </p>
+                  )}
                   <div className="space-y-2">
                     {detail.seasons!.map((s) => {
                       const open = openSeasons.has(s.number);
@@ -722,7 +731,7 @@ export function TitleDetail({
                               {s.episodes.map((e) => {
                                 const key = epKey(e.season, e.episode);
                                 const on = epSel.has(key);
-                                const have = downloaded.get(key);
+                                const have = matchingDownloads.get(key) || downloaded.get(key);
                                 const dl = !!have;
                                 const qed = queuedKeys.has(key);
                                 return (
@@ -757,7 +766,13 @@ export function TitleDetail({
                                           e.watched ? "text-slate-500" : on ? "text-slate-100" : "text-slate-400",
                                         )}
                                       >
-                                        {e.title}
+                                        <span className="block truncate">{e.title}</span>
+                                        {have && (
+                                          <span className="mt-0.5 block truncate text-[11px] font-normal text-sky-300/70"
+                                            title={downloadedHint(have, t)}>
+                                            {[have.resolution, voiceoverLabels(have.audio).join(", ") || t("Voiceover not recorded")].filter(Boolean).join(" · ")}
+                                          </span>
+                                        )}
                                       </span>
                                       {qed && (
                                         <span className="shrink-0 text-emerald-400/90" title={t("In the queue")}>

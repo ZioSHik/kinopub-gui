@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/mediainfo"
 	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 	"github.com/ZioSHik/kinopub-gui/internal/services/statestore"
 )
@@ -174,6 +175,21 @@ func scanLibrary(dirs []string) LibraryResponse {
 			}
 			return nil
 		})
+	}
+
+	// Recover audio from older downloads whose state predates audio recording.
+	// A shared deadline bounds disk work for a large library; cached results remain
+	// available on later scans without running ffprobe again.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for i := range resp.Series {
+		for j := range resp.Series[i].Episodes {
+			ep := &resp.Series[i].Episodes[j]
+			recoverLibraryAudio(ctx, ep)
+			for k := range ep.Versions {
+				recoverLibraryAudio(ctx, &ep.Versions[k])
+			}
+		}
 	}
 
 	sort.Slice(resp.Series, func(a, b int) bool {
@@ -514,4 +530,10 @@ func libraryFile(key string, rec domain.CompletedRec, dir string) LibraryEpisode
 		Path: path, Exists: path != "" && fsutil.IsNonEmptyFile(path), Bytes: rec.Bytes,
 		Resolution: rec.Resolution, CompletedAt: rec.CompletedAt, Audio: rec.Audio,
 		AudioFallback: rec.AudioFallback, RequestedQuality: rec.RequestedQuality, Quality: rec.Quality, AllAudio: rec.AllAudio}
+}
+
+func recoverLibraryAudio(ctx context.Context, ep *LibraryEpisode) {
+	if ep.Exists && len(ep.Audio) == 0 {
+		ep.Audio = mediainfo.AudioNames(ctx, ep.Path)
+	}
 }

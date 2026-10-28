@@ -165,6 +165,11 @@ const RU: Record<string, string> = {
   "Estimated size — refines as it downloads (HLS has no fixed total)":
     "Оценка размера — уточняется по мере загрузки (у HLS нет фиксированного итога)",
 
+  "Select episodes missing the selected quality or voiceover": "Выбрать серии без нужного качества или озвучки",
+  "Voiceover not recorded": "Озвучка не указана",
+  "{n} of {m} downloaded episodes match the selected quality and voiceover":
+    "Выбранным качеству и озвучке соответствуют {n} из {m} скачанных серий",
+
   // Library
   "Downloads found in your output folders": "Загрузки из ваших папок",
   Rescan: "Пересканировать",
@@ -256,7 +261,7 @@ const RU: Record<string, string> = {
   "{n} of {m} selected": "выбрано {n} из {m}",
   "Select all": "Выбрать все",
   "Deselect all": "Снять все",
-  "Only missing": "Только новые",
+  "Only missing": "Недостающие",
   "Select only episodes not yet downloaded": "Выбрать только ещё не скачанные серии",
   Downloaded: "Скачано",
   "Downloaded · {details}": "Скачано · {details}",

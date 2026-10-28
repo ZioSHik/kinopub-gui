@@ -34,6 +34,7 @@ import {
 import { useApp } from "../store";
 import { useI18n } from "../i18n";
 import { dismiss, pushRoute, replaceRoute, useRoute } from "../router";
+import { voiceoverCounts, voiceoverLabels } from "../lib/libraryAudio";
 import { bytes, relTime } from "../lib/format";
 import { completedSignal, itemIdFromURL } from "../lib/queue";
 import { EmptyState, Modal, PosterImage, Spinner } from "../components/ui";
@@ -200,6 +201,16 @@ function useSeriesActions(s: LibrarySeries, onDeleted: () => void) {
   return { openPath, remove, removeEpisode, deleting, removingKey };
 }
 
+function VoiceoverSummary({ episodes }: { episodes: LibraryEpisode[] }) {
+  const { t } = useI18n();
+  const counts = voiceoverCounts(episodes);
+  if (!counts.length) return null;
+  const text = counts.map(({ label, count }) =>
+    `${label || t("Voiceover not recorded")} — ${t("{n} ep", { n: count })}`,
+  ).join("; ");
+  return <p className="mt-1 text-xs leading-relaxed text-sky-300/70" title={text}>{t("Voiceover")}: {text}</p>;
+}
+
 function FileVersions({ episode }: { episode: LibraryEpisode }) {
   const { toast } = useApp();
   const { t } = useI18n();
@@ -255,7 +266,11 @@ function EpisodeRow({
         {e.key}
       </span>
       <span className={clsx("min-w-0 flex-1 truncate", e.exists ? "text-slate-300" : "text-slate-500 line-through")}>
-        {e.title || t("Episode {n}", { n: e.episode })}
+        <span className="block truncate">{e.title || t("Episode {n}", { n: e.episode })}</span>
+        <span className="mt-0.5 block truncate text-[11px] text-sky-300/70"
+          title={voiceoverLabels(e.audio).join(", ") || t("Voiceover not recorded")}>
+          {voiceoverLabels(e.audio).join(", ") || t("Voiceover not recorded")}
+        </span>
       </span>
       <FileVersions episode={e} />
       {e.resolution && <span className="hidden shrink-0 text-[11px] text-slate-500 sm:inline">{e.resolution}</span>}
@@ -459,6 +474,8 @@ function SeriesCard({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
               </Fragment>
             ))}
           </div>
+
+          <VoiceoverSummary episodes={episodes} />
 
           {genres.length > 0 && (
             <div className="mt-2">
@@ -689,6 +706,7 @@ function SeriesTile({ s, onDeleted, onOpenCard, onPickGenre }: CardProps) {
         {s.updatedAt && ` · ${relTime(s.updatedAt, t)}`}
         {missing > 0 && <span className="text-ember-400"> · {t("{n} missing", { n: missing })}</span>}
       </p>
+      <VoiceoverSummary episodes={episodes} />
       {genres.length > 0 && (
         <p className="truncate text-[11px] text-slate-600" title={genres.join(", ")}>
           {genres.slice(0, 2).join(" · ")}

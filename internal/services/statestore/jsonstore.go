@@ -15,6 +15,7 @@ import (
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/mediainfo"
 )
 
 const stateFileName = ".kinopub-state.json"
@@ -220,6 +221,8 @@ func (s *JSONStore) parseLegacyState(data []byte, series domain.SeriesID) (domai
 // Keep relative records anchored to the state file they came from, including
 // a legacy state loaded from the output root before migrating to a series dir.
 func resolveCompletedPaths(state *domain.DownloadState, dir string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	for key, rec := range state.Completed {
 		files := rec.Files()
 		for i := range files {
@@ -228,6 +231,9 @@ func resolveCompletedPaths(state *domain.DownloadState, dir string) {
 				if absolute, err := filepath.Abs(files[i].Path); err == nil {
 					files[i].Path = absolute
 				}
+			}
+			if len(files[i].Audio) == 0 && files[i].Path != "" {
+				files[i].Audio = mediainfo.AudioNames(ctx, files[i].Path)
 			}
 		}
 		rec = files[0]
