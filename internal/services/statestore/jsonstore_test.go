@@ -67,7 +67,7 @@ func TestMarkCompletedAndLoad(t *testing.T) {
 	key := domain.EpisodeKey{Series: "series-1", Season: 2, Episode: 5}
 	info := domain.CompletedInfo{
 		Key:      key,
-		Path:     "/tmp/test/S02E05.mkv",
+		Path:     filepath.Join(dir, "S02E05.mkv"),
 		Bytes:    123456,
 		Title:    "Test Episode",
 		Quality:  "1080p",
@@ -101,8 +101,8 @@ func TestMarkCompletedAndLoad(t *testing.T) {
 	if rec.Season != 2 || rec.Episode != 5 {
 		t.Errorf("expected season=2, episode=5, got season=%d, episode=%d", rec.Season, rec.Episode)
 	}
-	if rec.Path != "/tmp/test/S02E05.mkv" {
-		t.Errorf("expected path '/tmp/test/S02E05.mkv', got %q", rec.Path)
+	if rec.Path != info.Path {
+		t.Errorf("expected path %q, got %q", info.Path, rec.Path)
 	}
 	if rec.Bytes != 123456 {
 		t.Errorf("expected bytes 123456, got %d", rec.Bytes)

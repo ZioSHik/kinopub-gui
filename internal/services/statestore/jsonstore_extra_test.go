@@ -74,12 +74,13 @@ func TestMarkCompletedCreatesSeriesDir(t *testing.T) {
 func TestLoadLegacyMigration(t *testing.T) {
 	root := t.TempDir()
 	series := domain.SeriesID("legacy-series")
+	legacyPath := filepath.Join(root, "old", "ep.mkv")
 
 	// Write a legacy state file at root with one completed episode.
 	legacy := domain.DownloadState{
 		Series: series,
 		Completed: map[string]domain.CompletedRec{
-			"S1E2": {Season: 1, Episode: 2, Path: "/old/ep.mkv", Bytes: 99},
+			"S1E2": {Season: 1, Episode: 2, Path: legacyPath, Bytes: 99},
 		},
 	}
 	data, err := json.MarshalIndent(legacy, "", "  ")
@@ -105,7 +106,7 @@ func TestLoadLegacyMigration(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected S1E2 migrated from legacy, got %#v", got.Completed)
 	}
-	if rec.Path != "/old/ep.mkv" || rec.Bytes != 99 {
+	if rec.Path != legacyPath || rec.Bytes != 99 {
 		t.Fatalf("legacy rec not preserved: %#v", rec)
 	}
 }
@@ -264,18 +265,20 @@ func TestMarkCompletedPreservesMetadata(t *testing.T) {
 	}
 }
 
-// TestMarkCompletedOverwritesSameKey verifies remarking the same episode
-// updates the record rather than duplicating it.
-func TestMarkCompletedOverwritesSameKey(t *testing.T) {
+// TestMarkCompletedKeepsOneEpisodeWithMultipleFiles verifies another quality
+// updates the primary record without duplicating the episode or losing its old file.
+func TestMarkCompletedKeepsOneEpisodeWithMultipleFiles(t *testing.T) {
 	root := t.TempDir()
 	store := New(root, testLogger())
 	ctx := context.Background()
 	key := domain.EpisodeKey{Series: "ow", Season: 1, Episode: 1}
+	firstPath := filepath.Join(root, "episode-480p.mkv")
+	secondPath := filepath.Join(root, "episode-1080p.mkv")
 
-	if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: key, Path: "/a", Bytes: 1, Quality: "480p"}); err != nil {
+	if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: key, Path: firstPath, Bytes: 1, Quality: "480p"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: key, Path: "/b", Bytes: 2, Quality: "1080p"}); err != nil {
+	if err := store.MarkCompleted(ctx, domain.CompletedInfo{Key: key, Path: secondPath, Bytes: 2, Quality: "1080p"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -284,8 +287,11 @@ func TestMarkCompletedOverwritesSameKey(t *testing.T) {
 		t.Fatalf("expected 1 entry after overwrite, got %d", len(got.Completed))
 	}
 	rec := got.Completed["S1E1"]
-	if rec.Path != "/b" || rec.Bytes != 2 || rec.Quality != "1080p" {
+	if rec.Path != secondPath || rec.Bytes != 2 || rec.Quality != "1080p" {
 		t.Fatalf("record not overwritten: %#v", rec)
+	}
+	if len(rec.Versions) != 1 || rec.Versions[0].Path != firstPath || rec.Versions[0].Quality != "480p" || rec.Versions[0].Bytes != 1 {
+		t.Fatalf("previous file not preserved: %#v", rec.Versions)
 	}
 }
 
@@ -314,7 +320,7 @@ func TestMarkCompletedAllFieldsRoundTrip(t *testing.T) {
 	key := domain.EpisodeKey{Series: "full", Season: 7, Episode: 12}
 	info := domain.CompletedInfo{
 		Key:        key,
-		Path:       "/p/S07E12.mkv",
+		Path:       filepath.Join(root, "S07E12.mkv"),
 		Bytes:      9876543210,
 		Title:      "Эпизод",
 		Quality:    "2160p",
