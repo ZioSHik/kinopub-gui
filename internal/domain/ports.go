@@ -197,6 +197,9 @@ type HLSDownloadResult struct {
 
 	// VideoPath is the local path to the concatenated video .ts file.
 	VideoPath string
+	// VideoStartTime is the input's start timestamp, populated by the muxer
+	// when HLS subtitles need alignment to the MPEGTS clock.
+	VideoStartTime time.Duration
 	// AudioTracks are the local audio files downloaded separately (demuxed HLS).
 	// Empty when audio is muxed into the video stream.
 	AudioTracks    []HLSAudioTrack
@@ -224,6 +227,9 @@ type HLSSubtitleTrack struct {
 	Name     string
 	Language string
 	Forced   bool
+	// TimestampOffset maps cue time zero to the MPEGTS clock. HLS WebVTT
+	// uses this clock; external subtitle files already use output time (nil).
+	TimestampOffset *time.Duration
 }
 
 // PageScraper extracts playlist data from kino.watch pages.

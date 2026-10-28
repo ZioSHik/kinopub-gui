@@ -5,11 +5,16 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -190,6 +195,20 @@ func (d *Downloader) remuxLocal(ctx context.Context, job domain.Job, rawPath str
 // from separate files; this maps them all together with -c copy and applies
 // per-track labels/languages.
 func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLSDownloadResult) error {
+	for _, sub := range hls.SubtitleTracks {
+		if sub.TimestampOffset == nil {
+			continue
+		}
+		start, err := d.hlsVideoStart(ctx, hls.VideoPath)
+		if err != nil {
+			return fmt.Errorf("align HLS subtitles: %w", err)
+		}
+		// Do not mutate the caller's download result.
+		aligned := *hls
+		aligned.VideoStartTime = start
+		hls = &aligned
+		break
+	}
 	d.logger.Info("muxing HLS streams",
 		domain.F("episode", fmt.Sprintf("S%02dE%02d", job.Episode.Key.Season, job.Episode.Key.Episode)),
 		domain.F("audio_tracks", len(hls.AudioTracks)),
@@ -217,6 +236,45 @@ func (d *Downloader) MuxHLS(ctx context.Context, job domain.Job, hls *domain.HLS
 	}
 
 	return nil
+}
+
+// hlsVideoStart reads the same input start timestamp ffmpeg subtracts during
+// muxing. ffprobe is installed alongside ffmpeg by the managed tool installer.
+func (d *Downloader) hlsVideoStart(ctx context.Context, path string) (time.Duration, error) {
+	probe := "ffprobe"
+	if strings.EqualFold(filepath.Ext(d.ffmpegPath), ".exe") {
+		probe += ".exe"
+	}
+	if dir := filepath.Dir(d.ffmpegPath); dir != "." {
+		if sibling := filepath.Join(dir, probe); fileExists(sibling) {
+			probe = sibling
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	var output bytes.Buffer
+	args := []string{"-v", "error", "-show_entries", "format=start_time", "-of", "json", path}
+	if err := d.run(ctx, probe, args, nil, &output); err != nil {
+		return 0, fmt.Errorf("probe video start: %w", err)
+	}
+	var result struct {
+		Format struct {
+			StartTime string `json:"start_time"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+		return 0, fmt.Errorf("parse video start: %w", err)
+	}
+	seconds, err := strconv.ParseFloat(result.Format.StartTime, 64)
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || math.Abs(seconds) > float64(math.MaxInt64)/float64(time.Second) {
+		return 0, fmt.Errorf("invalid video start timestamp %q", result.Format.StartTime)
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // RemuxLocal remuxes a local media file (e.g. a concatenated HLS .ts) into the

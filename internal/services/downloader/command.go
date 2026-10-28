@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
@@ -412,6 +413,10 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 		args = append(args, "-i", a.Path)
 	}
 	for _, sub := range hls.SubtitleTracks {
+		if sub.TimestampOffset != nil {
+			offset := subtitleInputOffset(*sub.TimestampOffset, hls.VideoStartTime)
+			args = append(args, "-itsoffset", fmt.Sprintf("%.6f", offset.Seconds()))
+		}
 		args = append(args, "-i", sub.Path)
 	}
 
@@ -516,4 +521,17 @@ func BuildHLSMuxArgs(job domain.Job, hls *domain.HLSDownloadResult, tempPath str
 	args = append(args, tempPath)
 
 	return args
+}
+
+// subtitleInputOffset puts WebVTT cue time on the same origin ffmpeg uses
+// when it rebases the video input. MPEGTS is a wrapping 33-bit 90 kHz clock.
+func subtitleInputOffset(subtitleBase, videoStart time.Duration) time.Duration {
+	const wrap = time.Duration(1<<33) * time.Second / 90000
+	offset := (subtitleBase - videoStart) % wrap
+	if offset < -wrap/2 {
+		offset += wrap
+	} else if offset > wrap/2 {
+		offset -= wrap
+	}
+	return offset
 }

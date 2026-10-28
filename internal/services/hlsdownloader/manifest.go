@@ -114,9 +114,10 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			status := &statusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 			resp.Body.Close()
 			cancel()
-			lastErr = fmt.Errorf("media playlist returned HTTP %d", resp.StatusCode)
+			lastErr = fmt.Errorf("media playlist returned %w", status)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
@@ -118,12 +119,15 @@ func (d *Downloader) downloadSubtitleRendition(ctx context.Context, sub Subtitle
 	if err := os.WriteFile(path, []byte("WEBVTT\n\n"+merger.body.String()), 0600); err != nil {
 		return fail(err)
 	}
-	return domain.HLSSubtitleTrack{Path: path, Name: sub.Name, Language: sub.Language, Forced: sub.Forced}, nil
+	offset := time.Duration(merger.mapBase) * time.Millisecond
+	return domain.HLSSubtitleTrack{Path: path, Name: sub.Name, Language: sub.Language, Forced: sub.Forced, TimestampOffset: &offset}, nil
 }
 
 // WebVTT cue times are already on the presentation timeline, not relative to
 // the segment's EXTINF. Preserve them and deduplicate cues spanning a boundary.
 // Timestamp maps are normalized to the first segment's MPEGTS/LOCAL mapping.
+// mapBase must accompany the file so the muxer can align it to the video's
+// clock, instead of treating the first segment's LOCAL time as output time.
 type webVTTMerger struct {
 	body    strings.Builder
 	seen    map[string]bool
@@ -179,6 +183,11 @@ func (m *webVTTMerger) add(text string) error {
 			offset -= wrap
 		}
 		shift = offset - m.mapBase
+	}
+	if !m.hasMap {
+		// Without an explicit map, WebVTT time zero maps to MPEGTS zero.
+		// Establish that origin before later segments introduce timestamp maps.
+		m.hasMap = true
 	}
 	if m.seen == nil {
 		m.seen = make(map[string]bool)
