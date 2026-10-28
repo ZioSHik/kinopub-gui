@@ -183,6 +183,7 @@ func (s *JSONStore) loadLocked(series domain.SeriesID) (domain.DownloadState, er
 	if state.Completed == nil {
 		state.Completed = make(map[string]domain.CompletedRec)
 	}
+	resolveCompletedPaths(&state, filepath.Dir(s.statePath()))
 
 	return state, nil
 }
@@ -210,8 +211,24 @@ func (s *JSONStore) parseLegacyState(data []byte, series domain.SeriesID) (domai
 	if state.Completed == nil {
 		state.Completed = make(map[string]domain.CompletedRec)
 	}
+	resolveCompletedPaths(&state, s.rootDir)
 
 	return state, nil
+}
+
+// Keep relative records anchored to the state file they came from, including
+// a legacy state loaded from the output root before migrating to a series dir.
+func resolveCompletedPaths(state *domain.DownloadState, dir string) {
+	for key, rec := range state.Completed {
+		if rec.Path == "" || filepath.IsAbs(rec.Path) {
+			continue
+		}
+		rec.Path = filepath.Join(dir, rec.Path)
+		if absolute, err := filepath.Abs(rec.Path); err == nil {
+			rec.Path = absolute
+		}
+		state.Completed[key] = rec
+	}
 }
 
 // episodeKeyString formats an EpisodeKey as the map key used in state JSON.
@@ -234,11 +251,22 @@ func (s *JSONStore) MarkCompleted(_ context.Context, info domain.CompletedInfo) 
 
 	// Load current state (or start fresh).
 	state, _ := s.loadLocked(info.Key.Series)
+	// OutputLayout returns paths relative to the working directory when the
+	// output root is relative. Persist an absolute path so reopening the state
+	// never interprets that root a second time relative to the series folder.
+	path := info.Path
+	if path != "" {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return fmt.Errorf("statestore: resolve completed file: %w", err)
+		}
+		path = absolute
+	}
 
 	rec := domain.CompletedRec{
 		Season:      info.Key.Season,
 		Episode:     info.Key.Episode,
-		Path:        info.Path,
+		Path:        path,
 		Bytes:       info.Bytes,
 		CompletedAt: time.Now(),
 		Title:       info.Title,
@@ -340,11 +368,21 @@ func LockedUpdate(path string, mutate func(state *domain.DownloadState) (write b
 	return fsutil.AtomicWrite(path, out, 0644)
 }
 
-// IsCompleted checks whether the given episode is marked as completed in the
-// loaded state (Req 12.2).
+// IsCompleted checks the record and its file. A stale record must not prevent
+// restoring a movie or episode whose file was removed outside the app.
 func (s *JSONStore) IsCompleted(state domain.DownloadState, key domain.EpisodeKey) bool {
-	_, ok := state.Completed[episodeKeyString(key)]
-	return ok
+	rec, ok := state.Completed[episodeKeyString(key)]
+	if !ok || rec.Path == "" {
+		return false
+	}
+	path := rec.Path
+	if !filepath.IsAbs(path) {
+		s.mu.Lock()
+		dir := filepath.Dir(s.statePath())
+		s.mu.Unlock()
+		path = filepath.Join(dir, path)
+	}
+	return fsutil.IsNonEmptyFile(path)
 }
 
 // Verify that *JSONStore satisfies domain.StateStore at compile time.

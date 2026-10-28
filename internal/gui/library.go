@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
+	"github.com/ZioSHik/kinopub-gui/internal/lib/fsutil"
 	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
 	"github.com/ZioSHik/kinopub-gui/internal/services/statestore"
 )
@@ -440,12 +441,7 @@ func readLibraryState(stateFile string) (LibrarySeries, bool) {
 		if fullPath != "" && !filepath.IsAbs(fullPath) {
 			fullPath = filepath.Join(dir, fullPath)
 		}
-		exists := false
-		if fullPath != "" {
-			if _, statErr := os.Stat(fullPath); statErr == nil {
-				exists = true
-			}
-		}
+		exists := fullPath != "" && fsutil.IsNonEmptyFile(fullPath)
 		item.Episodes = append(item.Episodes, LibraryEpisode{
 			Key:         key,
 			Season:      rec.Season,

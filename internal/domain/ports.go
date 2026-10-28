@@ -129,6 +129,8 @@ type StateStore interface {
 	Load(ctx context.Context, series SeriesID) (DownloadState, error)
 	MarkCompleted(ctx context.Context, info CompletedInfo) error
 	SetMetadata(ctx context.Context, series SeriesID, meta SeriesMetadata) error
+	// IsCompleted reports whether the episode has a completion record and its
+	// output file is still present and nonempty.
 	IsCompleted(state DownloadState, key EpisodeKey) bool
 }
 
