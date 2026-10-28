@@ -15,7 +15,7 @@ jobs:
   # updated binary keeps the menu-bar shell).
   macos:
     name: macOS (.dmg + updater binaries)
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
