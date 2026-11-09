@@ -13,8 +13,8 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/klauspost/compress v1.18.7 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
