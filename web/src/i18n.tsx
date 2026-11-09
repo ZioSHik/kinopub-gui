@@ -303,6 +303,15 @@ const RU: Record<string, string> = {
 
   // Dir picker
   "Choose a folder": "Выбор папки",
+  "Season {n} voiceovers": "Озвучки сезона {n}",
+  "{n} episodes selected": "серий выбрано: {n}",
+  "Voiceover choices apply only to their season.": "Выбор озвучки применяется только к её сезону.",
+  "Choose a voiceover for this season.": "Выберите озвучку для этого сезона.",
+  "This voiceover is missing from some selected episodes. Choose another or deselect those episodes.": "В части выбранных серий этой озвучки нет. Выберите другую или снимите эти серии.",
+  "Preview to choose episodes and season voiceovers.": "Нажмите «Предпросмотр», чтобы выбрать серии и озвучки по сезонам.",
+  "Preview this link before downloading.": "Сначала загрузите предпросмотр этой ссылки.",
+  "Folder path": "Путь к папке",
+  "Go to folder": "Перейти",
   "Parent folder": "Родительская папка",
   "Files download into this folder.": "Файлы скачиваются в эту папку.",
   "Use this folder": "Выбрать эту папку",

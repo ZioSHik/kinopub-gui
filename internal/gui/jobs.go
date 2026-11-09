@@ -407,7 +407,7 @@ func newJobManager(hub *Hub) *JobManager {
 		hub:  hub,
 		// No handlers: the controller's debug chatter belongs to no single job's
 		// card, and there is no log view to send it to.
-		limiter: hlsdownloader.NewLimiter(0, logx.New(nil)),
+		limiter: hlsdownloader.NewLimiterWithCeiling(2, 2, logx.New(nil)),
 	}
 	go m.flushLoop()
 	return m

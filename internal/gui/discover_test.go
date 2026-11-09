@@ -230,6 +230,26 @@ func TestCollectAudios_DedupAndIndex(t *testing.T) {
 	}
 }
 
+func TestCollectAudios_LaterSeasonStudios(t *testing.T) {
+	dub := kinopubapi.Audio{Index: 1, Lang: "rus", Type: kinopubapi.NamedID{Title: "Дубляж"}, Codec: "aac", Channels: 2}
+	rentv := dub
+	rentv.Author.Title = "РенТВ"
+	it := kinopubapi.Item{Seasons: []kinopubapi.Season{
+		{Number: 1, Episodes: []kinopubapi.Episode{{Audios: []kinopubapi.Audio{dub}}}},
+		{Number: 6, Episodes: []kinopubapi.Episode{
+			{Audios: []kinopubapi.Audio{rentv}},
+			{Audios: []kinopubapi.Audio{rentv}},
+		}},
+	}}
+	got := collectAudios(it)
+	if len(got) != 2 {
+		t.Fatalf("expected generic dub and later-season studio, got %+v", got)
+	}
+	if got[1].Author != "РенТВ" || got[1].Filter != "РенТВ" || got[1].Lang != "rus" || got[1].Codec != "aac" || got[1].Channels != 2 {
+		t.Fatalf("later-season rendition was lost or altered: %+v", got[1])
+	}
+}
+
 func TestCollectAudios_IndexFallback(t *testing.T) {
 	// When Index is 0 (unset for non-first entries), it falls back to the slice
 	// position.

@@ -2,6 +2,7 @@ package kinopub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -438,6 +439,9 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				return
 			}
 			wait := e.backoffFor(pe.attempts)
+			if errors.Is(err, domain.ErrCDNSessionLimit) && wait < time.Minute {
+				wait = time.Minute
+			}
 			// Capture everything read for the log/report BEFORE re-parking: once pe
 			// is back in retryQueue another worker may pick it up immediately (the
 			// retry backoff is zero in tests), so touching pe past the unlock races.
@@ -1176,6 +1180,9 @@ var transientErrorMarkers = []string{
 func isTransientDownloadError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, domain.ErrCDNSessionLimit) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, marker := range transientErrorMarkers {

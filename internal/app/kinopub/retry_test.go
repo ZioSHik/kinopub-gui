@@ -11,6 +11,15 @@ import (
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 )
 
+func TestSessionLimitIsRetryableButOrdinary403IsNot(t *testing.T) {
+	if !isTransientDownloadError(fmt.Errorf("audio track 0: %w", domain.ErrCDNSessionLimit)) {
+		t.Fatal("account session limit should preserve partial data for retry")
+	}
+	if isTransientDownloadError(errors.New("HTTP 403: access denied")) {
+		t.Fatal("ordinary authorization failure must not be retried as session exhaustion")
+	}
+}
+
 func TestIsTransientDownloadError(t *testing.T) {
 	transient := []string{
 		"video track: segment 44 failed: after 5 attempts: context deadline exceeded",

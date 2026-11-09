@@ -112,7 +112,7 @@ func (d *Downloader) downloadSubtitleOnce(ctx context.Context, rawURL, path stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return &statusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		return cdnStatusError(resp)
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".subtitle-*")
 	if err != nil {

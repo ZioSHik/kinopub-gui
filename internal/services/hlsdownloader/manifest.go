@@ -74,7 +74,7 @@ func FetchMasterPlaylist(ctx context.Context, client *http.Client, manifestURL s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("master playlist returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("master playlist returned %w", cdnStatusError(resp))
 	}
 
 	return parseMasterPlaylist(resp.Body, manifestURL)
@@ -115,10 +115,13 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			status := &statusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+			status := cdnStatusError(resp)
 			resp.Body.Close()
 			cancel()
 			lastErr = fmt.Errorf("media playlist returned %w", status)
+			if status.SessionLimit {
+				return nil, lastErr
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()

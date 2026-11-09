@@ -89,7 +89,7 @@ func listDir(path string) (FSListing, error) {
 	if err != nil {
 		return FSListing{}, err
 	}
-	listing := FSListing{Path: abs, Parent: filepath.Dir(abs)}
+	listing := FSListing{Path: abs, Parent: filepath.Dir(abs), Dirs: make([]FSEntry, 0)}
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { JobView } from "../api";
 import { audioSelectionSpecs } from "../lib/audio";
@@ -131,4 +131,62 @@ it("refreshes the inventory while the open title finishes downloading", async ()
   rendered.rerender(<I18nProvider><TitleDetail {...props} /></I18nProvider>);
   await act(async () => {});
   expect(screen.getByText("8 of 8 downloaded")).toBeInTheDocument();
+});
+
+
+async function useSeasonCatalog() {
+  const detail = await mocks.detail();
+  const dub = {index: 1,lang: "rus",type: "Дубляж",author: "",label: "Дубляж",filter: "Дубляж",codec: "aac",channels: 2,surround: false,episodeKeys: ["S1E1"]};
+  const rentv = {...dub,author: "РенТВ",label: "Дубляж · РенТВ",filter: "РенТВ",episodeKeys: ["S6E1"]};
+  detail.audios = [dub, rentv];
+  detail.episodeCount = 2;
+  detail.seasons = [
+    {number: 1,audios: [dub],episodes: [{season: 1,episode: 1,title: "Pilot",watched: false}]},
+    {number: 6,audios: [rentv],episodes: [{season: 6,episode: 1,title: "Family",watched: false}]},
+  ];
+  mocks.detail.mockResolvedValue(detail);
+  mocks.downloaded.mockResolvedValue({episodes: []});
+  mocks.start.mockResolvedValue({id: "test-job"});
+  return detail;
+}
+
+it("scopes each season's voiceover and submits separate exact requests", async () => {
+  await useSeasonCatalog();
+  render(<I18nProvider><TitleDetail id="8867" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  const first = screen.getByLabelText("Season 1 voiceovers");
+  const sixth = screen.getByLabelText("Season 6 voiceovers");
+  expect(within(first).queryByRole("button", {name: "Дубляж · РенТВ",hidden: true})).not.toBeInTheDocument();
+  fireEvent.click(within(first).getByRole("button", {name: "Дубляж"}));
+  expect(screen.getByRole("button", {name: "Choose a voiceover"})).toBeDisabled();
+  fireEvent.click(within(sixth).getByRole("button", {name: "Дубляж · РенТВ",hidden: true}));
+  await act(async () => {fireEvent.click(screen.getByRole("button", {name: "Download (2)"}));});
+  expect(mocks.start).toHaveBeenCalledTimes(2);
+  expect(mocks.start.mock.calls[0][0]).toMatchObject({seasons: "1",episodeKeys: ["S1E1"],audioSpecs: [{source: {author: ""}}]});
+  expect(mocks.start.mock.calls[1][0]).toMatchObject({seasons: "6",episodeKeys: ["S6E1"],audioSpecs: [{source: {author: "РенТВ"}}]});
+});
+
+it("preserves an explicitly selected season when its voiceover is chosen", async () => {
+  await useSeasonCatalog();
+  render(<I18nProvider><TitleDetail id="8867" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("button", {name: "Deselect all"}));
+  fireEvent.click(screen.getAllByTitle("Toggle season")[1]);
+  fireEvent.click(within(screen.getByLabelText("Season 6 voiceovers")).getByRole("button", {name: "Дубляж · РенТВ",hidden: true}));
+  await act(async () => {fireEvent.click(screen.getByRole("button", {name: "Download (1)"}));});
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.start.mock.calls[0][0]).toMatchObject({seasons: "6",episodeKeys: ["S6E1"]});
+});
+
+it("blocks a seasonal track missing from a selected episode instead of substituting it", async () => {
+  const detail = await useSeasonCatalog();
+  detail.seasons[1].episodes.push({season: 6,episode: 2,title: "Other",watched: false});
+  mocks.detail.mockResolvedValue(detail);
+  render(<I18nProvider><TitleDetail id="8867" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  const sixth = screen.getByLabelText("Season 6 voiceovers");
+  fireEvent.click(within(sixth).getByRole("button", {name: "Дубляж · РенТВ",hidden: true}));
+  expect(within(sixth).getByText(/This voiceover is missing/)).toBeInTheDocument();
+  expect(screen.getByRole("button", {name: "Choose a voiceover"})).toBeDisabled();
+  expect(mocks.start).not.toHaveBeenCalled();
 });

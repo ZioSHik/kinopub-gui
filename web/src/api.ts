@@ -210,6 +210,7 @@ export interface DiscoverPage {
 }
 
 export interface DiscoverAudio {
+  episodeKeys?: string[];
   index: number;
   lang: string;
   type: string;
@@ -237,6 +238,7 @@ export interface DiscoverEpisode {
 export interface DiscoverSeason {
   number: number;
   episodes: DiscoverEpisode[];
+  audios?: DiscoverAudio[];
 }
 
 export interface DiscoverDetail extends DiscoverItem {
@@ -328,9 +330,11 @@ export interface PreviewEpisode {
 export interface PreviewSeason {
   number: number;
   episodes: PreviewEpisode[];
+  audios?: DiscoverAudio[];
 }
 
 export interface PreviewResponse {
+  isSerial?: boolean;
   seriesId: string;
   title: string;
   originalTitle?: string;
@@ -446,7 +450,7 @@ export interface FSEntry {
 export interface FSListing {
   path: string;
   parent: string;
-  dirs: FSEntry[];
+  dirs: FSEntry[] | null;
 }
 
 // A request that never settles is worse than one that fails: the browser allows

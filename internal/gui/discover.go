@@ -54,11 +54,12 @@ type DiscoverPage struct {
 
 // DiscoverAudio is one озвучка the user can pick before downloading.
 type DiscoverAudio struct {
-	Index  int    `json:"index"`
-	Lang   string `json:"lang"`
-	Type   string `json:"type"`
-	Author string `json:"author"`
-	Label  string `json:"label"`
+	EpisodeKeys []string `json:"episodeKeys,omitempty"`
+	Index       int      `json:"index"`
+	Lang        string   `json:"lang"`
+	Type        string   `json:"type"`
+	Author      string   `json:"author"`
+	Label       string   `json:"label"`
 	// Filter is the substring the download audio-preference should match
 	// against the HLS track name (author when present, else type/lang).
 	Filter string `json:"filter"`
@@ -83,6 +84,7 @@ type DiscoverEpisode struct {
 type DiscoverSeason struct {
 	Number   int               `json:"number"`
 	Episodes []DiscoverEpisode `json:"episodes"`
+	Audios   []DiscoverAudio   `json:"audios"`
 }
 
 // DiscoverDetail is the full title view.
@@ -238,29 +240,28 @@ func audioCodecSuffix(a kinopubapi.Audio) string {
 	}
 }
 
-// collectAudios returns the distinct озвучки for an item (sampled from the first
-// available episode/video, deduped by label).
+// collectAudios returns the distinct voiceovers across all episodes/videos.
+// Studios can change between seasons, so the first episode is not representative.
 func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 	var src []kinopubapi.Audio
+	add := func(audios []kinopubapi.Audio) {
+		for i, audio := range audios {
+			if audio.Index == 0 {
+				audio.Index = i
+			}
+			src = append(src, audio)
+		}
+	}
 	switch {
 	case len(it.Seasons) > 0:
 		for _, sea := range it.Seasons {
 			for _, ep := range sea.Episodes {
-				if len(ep.Audios) > 0 {
-					src = ep.Audios
-					break
-				}
-			}
-			if src != nil {
-				break
+				add(ep.Audios)
 			}
 		}
 	case len(it.Videos) > 0:
 		for _, v := range it.Videos {
-			if len(v.Audios) > 0 {
-				src = v.Audios
-				break
-			}
+			add(v.Audios)
 		}
 	}
 
@@ -274,7 +275,7 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 		labelLanguages[label][audio.Lang] = true
 	}
 	out := make([]DiscoverAudio, 0, len(src))
-	for i, a := range src {
+	for _, a := range src {
 		label, filter := audioLabel(a)
 		if len(labelLanguages[label]) > 1 {
 			label += " · " + strings.ToUpper(a.Lang)
@@ -283,12 +284,8 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 			continue
 		}
 		seen[label] = true
-		idx := a.Index
-		if idx == 0 {
-			idx = i
-		}
 		out = append(out, DiscoverAudio{
-			Index:    idx,
+			Index:    a.Index,
 			Lang:     a.Lang,
 			Type:     a.Type.Title,
 			Author:   a.Author.Title,
@@ -307,7 +304,7 @@ func collectSeasons(it kinopubapi.Item) ([]DiscoverSeason, int) {
 	count := 0
 	if len(it.Seasons) > 0 {
 		for _, sea := range it.Seasons {
-			ds := DiscoverSeason{Number: sea.Number}
+			ds := DiscoverSeason{Number: sea.Number, Audios: collectSeasonAudios(sea.Number, sea.Episodes)}
 			for _, ep := range sea.Episodes {
 				title := ep.Title
 				if title == "" {

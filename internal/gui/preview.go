@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
@@ -28,10 +29,12 @@ type PreviewEpisode struct {
 type PreviewSeason struct {
 	Number   int              `json:"number"`
 	Episodes []PreviewEpisode `json:"episodes"`
+	Audios   []DiscoverAudio  `json:"audios"`
 }
 
 // PreviewResponse is the resolved series catalog returned to the UI.
 type PreviewResponse struct {
+	IsSerial         bool            `json:"isSerial"`
 	SeriesID         string          `json:"seriesId"`
 	Title            string          `json:"title"`
 	OriginalTitle    string          `json:"originalTitle,omitempty"`
@@ -77,6 +80,7 @@ func (s *Server) preview(ctx context.Context, req RunRequest) (*PreviewResponse,
 	state := loadSeriesState(ctx, cfg.OutputPath, series, logger)
 
 	resp := &PreviewResponse{
+		IsSerial:      strings.Contains(playlist.Type, "serial") || strings.Contains(playlist.Type, "show") || len(playlist.Seasons) > 1,
 		SeriesID:      string(series.ID),
 		Title:         series.Title,
 		OriginalTitle: series.OriginalTitle,
@@ -87,10 +91,10 @@ func (s *Server) preview(ctx context.Context, req RunRequest) (*PreviewResponse,
 	}
 
 	for _, season := range series.Seasons {
-		ps := PreviewSeason{Number: season.Number}
+		ps := PreviewSeason{Number: season.Number, Audios: playlistSeasonAudios(playlist, season.Number)}
 		for _, ep := range season.Episodes {
 			selected := cfg.SeasonSel.Matches(season.Number) && cfg.EpisodeSel.Matches(ep.Key.Episode)
-			completed := isCompleted(state, ep.Key)
+			completed := !cfg.ForceRedownload && isCompleted(state, ep.Key)
 			ps.Episodes = append(ps.Episodes, PreviewEpisode{
 				Key:             epKey(ep.Key),
 				Season:          ep.Key.Season,

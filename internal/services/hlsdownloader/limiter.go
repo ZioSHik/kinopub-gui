@@ -103,9 +103,10 @@ type adaptiveLimiter struct {
 	windowBytes int64
 	windowDone  int
 
-	lastRate  float64   // rate of the previous completed window (0 = none yet)
-	settledAt time.Time // hold the limit until this instant, then probe again
-	coolUntil time.Time // no new segment may start before this (429 back-pressure)
+	lastRate     float64   // rate of the previous completed window (0 = none yet)
+	settledAt    time.Time // hold the limit until this instant, then probe again
+	coolUntil    time.Time // no new segment may start before this (429 back-pressure)
+	sessionUntil time.Time // account session limit: pause new CDN requests together
 
 	peak int // highest limit reached, for the closing log line
 
@@ -160,6 +161,24 @@ func NewLimiter(start int, logger domain.Logger) *Limiter {
 	return newAdaptiveLimiter(start, 1, logger)
 }
 
+// NewLimiterWithCeiling keeps the shared request budget below an explicit cap,
+// including when the throughput controller or additional tracks request more.
+func NewLimiterWithCeiling(start, ceiling int, logger domain.Logger) *Limiter {
+	if ceiling < 1 {
+		ceiling = 1
+	}
+	if ceiling > hardSegmentConcurrency {
+		ceiling = hardSegmentConcurrency
+	}
+	l := NewLimiter(start, logger)
+	l.ceiling, l.hardCeiling = ceiling, ceiling
+	if l.limit > ceiling {
+		l.limit = ceiling
+	}
+	l.peak = l.limit
+	return l
+}
+
 // Stats is a snapshot of the controller, for callers deciding whether the link
 // has room for more work than it is currently being given.
 type Stats struct {
@@ -177,7 +196,39 @@ func (l *adaptiveLimiter) Stats() Stats {
 		Limit:     l.limit,
 		InFlight:  l.inFlight,
 		Ceiling:   l.capLocked(),
-		Throttled: l.now().Before(l.coolUntil),
+		Throttled: l.now().Before(l.coolUntil) || l.now().Before(l.sessionUntil),
+	}
+}
+
+// Account session exhaustion needs time for an existing playback session to
+// expire. Opening the next episode immediately would consume another session.
+func (l *adaptiveLimiter) sessionLimited(retryAfter time.Duration) {
+	if retryAfter < time.Minute {
+		retryAfter = time.Minute
+	}
+	l.mu.Lock()
+	until := l.now().Add(retryAfter)
+	if until.After(l.sessionUntil) {
+		l.sessionUntil = until
+	}
+	l.mu.Unlock()
+}
+
+func (l *adaptiveLimiter) waitSession(ctx context.Context) error {
+	for {
+		l.mu.Lock()
+		wait := l.sessionUntil.Sub(l.now())
+		l.mu.Unlock()
+		if wait <= 0 {
+			return ctx.Err()
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 

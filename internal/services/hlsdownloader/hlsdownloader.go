@@ -239,6 +239,9 @@ func (d *Downloader) downloadEpisodeInternal(
 
 func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, quality domain.Quality,
 	outPath string, key domain.EpisodeKey, sink domain.ProgressSink, audioOnly bool, existing []string) (*domain.HLSDownloadResult, error) {
+	if err := d.sharedLimiter().waitSession(ctx); err != nil {
+		return nil, err
+	}
 	epLabel := fmt.Sprintf("S%02dE%02d", key.Season, key.Episode)
 
 	// 1. Fetch and parse master playlist.
@@ -246,6 +249,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 
 	master, err := FetchMasterPlaylist(ctx, d.client, manifestURL, d.auth, d.logger)
 	if err != nil {
+		d.observeSessionLimit(err)
 		return nil, fmt.Errorf("master playlist: %w", err)
 	}
 	if len(master.Variants) == 0 {
@@ -340,6 +344,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 	// 4. Fetch video media playlist.
 	videoPlaylist, err := FetchMediaPlaylist(ctx, d.client, selected.URL, d.auth)
 	if err != nil {
+		d.observeSessionLimit(err)
 		return nil, fmt.Errorf("media playlist: %w", err)
 	}
 	if len(videoPlaylist.Segments) == 0 {
@@ -369,6 +374,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		}
 		ap, err := FetchMediaPlaylist(ctx, d.client, a.URI, d.auth)
 		if err != nil {
+			d.observeSessionLimit(err)
 			kind := "audio"
 			if pref.RequiresOriginal() {
 				kind = "requested original audio"
@@ -637,6 +643,8 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		)
 	}
 
+	tracksCtx, cancelTracks := context.WithCancel(ctx)
+	defer cancelTracks()
 	var (
 		trackWG  sync.WaitGroup
 		trackErr error
@@ -644,7 +652,10 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 	)
 	recordErr := func(err error) {
 		if err != nil {
-			errOnce.Do(func() { trackErr = err })
+			errOnce.Do(func() {
+				trackErr = err
+				cancelTracks()
+			})
 		}
 	}
 
@@ -653,7 +664,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		trackWG.Add(1)
 		go func() {
 			defer trackWG.Done()
-			if err := downloadTrack(ctx, 0, videoPlaylist.InitURI, videoPlaylist.Segments, videoDir, videoPath); err != nil {
+			if err := downloadTrack(tracksCtx, 0, videoPlaylist.InitURI, videoPlaylist.Segments, videoDir, videoPath); err != nil {
 				recordErr(fmt.Errorf("video track: %w", err))
 			}
 		}()
@@ -665,7 +676,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		go func(ai int, aj audioJob) {
 			defer trackWG.Done()
 			audioDir := filepath.Join(tmpDir, fmt.Sprintf("audio_%d", ai))
-			if err := downloadTrack(ctx, 1+ai, aj.playlist.InitURI, aj.playlist.Segments, audioDir, aj.outFile); err != nil {
+			if err := downloadTrack(tracksCtx, 1+ai, aj.playlist.InitURI, aj.playlist.Segments, audioDir, aj.outFile); err != nil {
 				recordErr(fmt.Errorf("audio track %d: %w", ai, err))
 				return
 			}
@@ -682,7 +693,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		trackWG.Add(1)
 		go func() {
 			defer trackWG.Done()
-			tracks, err := d.downloadSubtitleRenditions(ctx, master, selected, tmpDir)
+			tracks, err := d.downloadSubtitleRenditions(tracksCtx, master, selected, tmpDir)
 			if err != nil {
 				recordErr(fmt.Errorf("subtitle tracks: %w", err))
 				return
@@ -737,11 +748,40 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 // Retry-After hint so the retry loop can wait exactly as long as the server
 // asked for instead of guessing with a blind exponential backoff.
 type statusError struct {
-	Code       int
-	RetryAfter time.Duration
+	Code         int
+	RetryAfter   time.Duration
+	SessionLimit bool
 }
 
-func (e *statusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+func (e *statusError) Error() string {
+	if e.SessionLimit {
+		return fmt.Sprintf("HTTP %d: user session limit reached", e.Code)
+	}
+	return fmt.Sprintf("HTTP %d", e.Code)
+}
+
+func (e *statusError) Unwrap() error {
+	if e.SessionLimit {
+		return domain.ErrCDNSessionLimit
+	}
+	return nil
+}
+
+func cdnStatusError(resp *http.Response) *statusError {
+	err := &statusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+	if resp.StatusCode == http.StatusForbidden {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		err.SessionLimit = strings.Contains(strings.ToLower(string(body)), "user session limit reached")
+	}
+	return err
+}
+
+func (d *Downloader) observeSessionLimit(err error) {
+	var status *statusError
+	if errors.As(err, &status) && status.SessionLimit {
+		d.sharedLimiter().sessionLimited(status.RetryAfter)
+	}
+}
 
 // throttled reports whether the response means "you are going too fast" rather
 // than "something broke". Those are the only ones worth slowing the whole
@@ -788,6 +828,10 @@ func (d *Downloader) downloadSegment(ctx context.Context, seg Segment, outPath s
 		}
 
 		lastErr = err
+		if errors.Is(err, domain.ErrCDNSessionLimit) {
+			d.observeSessionLimit(err)
+			return 0, err
+		}
 		var se *statusError
 		if lim != nil && errors.As(err, &se) && se.throttled() {
 			lim.throttle(se.RetryAfter)
@@ -804,6 +848,9 @@ func (d *Downloader) downloadSegment(ctx context.Context, seg Segment, outPath s
 
 // fetchSegment downloads a single segment to disk.
 func (d *Downloader) fetchSegment(ctx context.Context, segURL, outPath string) (int64, error) {
+	if err := d.sharedLimiter().waitSession(ctx); err != nil {
+		return 0, err
+	}
 	// Per-segment timeout: 120 seconds for slow CDN connections.
 	segCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -821,10 +868,7 @@ func (d *Downloader) fetchSegment(ctx context.Context, segURL, outPath string) (
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, &statusError{
-			Code:       resp.StatusCode,
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
-		}
+		return 0, cdnStatusError(resp)
 	}
 
 	f, err := os.CreateTemp(filepath.Dir(outPath), ".segment-*")

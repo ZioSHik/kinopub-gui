@@ -43,6 +43,8 @@ import { Modal, PosterImage } from "./ui";
 import { Ratings } from "./Ratings";
 import { Player } from "./Player";
 import { AudioPicker } from "./AudioPicker";
+import { SeasonAudioPicker } from "./SeasonAudioPicker";
+import { chosenSeasonAudios, rememberSeasonAudio, seasonAudioIssue, seedSeasonAudio, type SeasonAudioSelection } from "../lib/seasonAudio";
 
 const QUALITIES = ["", "2160p", "1080p", "720p", "480p", "360p"];
 
@@ -88,6 +90,13 @@ export function TitleDetail({
   const [quality, setQuality] = useState(settings.quality);
   // Selected voiceover labels. An empty selection waits for an explicit choice.
   const [audioSel, setAudioSel] = useState<Set<string>>(new Set());
+  const [seasonAudioSel, setSeasonAudioSel] = useState<SeasonAudioSelection>({});
+  const episodeSelectionEdited = useRef(false);
+  const usesSeasonAudio = !!detail?.seasons?.some((season) => season.audios !== undefined);
+  const seasonGroups = useMemo(() => (detail?.seasons || []).map((season) => ({
+    number: season.number, audios: season.audios || [],
+    episodeKeys: season.episodes.map((ep) => epKey(ep.season, ep.episode)),
+  })), [detail]);
   // True when a remembered voiceover existed but isn't available here, so the
   // user is prompted to pick another.
   const [audioPrefMissing, setAudioPrefMissing] = useState(false);
@@ -99,9 +108,14 @@ export function TitleDetail({
     // already on disk. Empty audio must not mark existing episodes as missing.
     const audios = audioSel.size ? detail?.audios || [] : [];
     return new Map(downloadedFiles
-      .filter((file) => matchesDownload(file, quality, settings.container, audios, audioSel))
+      .filter((file) => {
+        if (!usesSeasonAudio) return matchesDownload(file, quality, settings.container, audios, audioSel);
+        const group = seasonGroups.find((season) => season.number === file.season);
+        const selected = seasonAudioSel[file.season] || new Set<string>();
+        return matchesDownload(file, quality, settings.container, selected.size ? group?.audios || [] : [], selected);
+      })
       .map((file) => [file.key, file]));
-  }, [downloadedFiles, quality, settings.container, detail, audioSel]);
+  }, [downloadedFiles, quality, settings.container, detail, audioSel, usesSeasonAudio, seasonGroups, seasonAudioSel]);
   const downloaded = useMemo(() => existingDownloads(downloadedFiles), [downloadedFiles]);
   const selectionVersion = useRef("");
   // Whether the on-disk scan has answered. The episode selection waits for it:
@@ -129,6 +143,8 @@ export function TitleDetail({
     setEpSel(null);
     setSeeded(false);
     setAudioSel(new Set());
+    setSeasonAudioSel({});
+    episodeSelectionEdited.current = false;
     setAudioPrefMissing(false);
     setDownloadedFiles([]);
     selectionVersion.current = "";
@@ -196,11 +212,22 @@ export function TitleDetail({
   // Scoped to this folder and the selected rendition: another voiceover or
   // quality can still be added while the original request is queued.
   const coverage = useMemo(
-    () => queueCoverage(jobs, id, settings.outputPath, {
-      quality, container: settings.container,
-      audioSpecs: audioSelectionSpecs((detail?.audios || []).filter((a) => audioSel.has(a.label))),
-    }),
-    [jobs, id, settings.outputPath, quality, settings.container, detail, audioSel],
+    () => {
+      if (!usesSeasonAudio) return queueCoverage(jobs, id, settings.outputPath, {
+        quality, container: settings.container,
+        audioSpecs: audioSelectionSpecs((detail?.audios || []).filter((a) => audioSel.has(a.label))),
+      });
+      const refs = new Set<string>();
+      for (const group of seasonGroups) {
+        const covered = queueCoverage(jobs, id, settings.outputPath, { quality, container: settings.container,
+          audioSpecs: audioSelectionSpecs(chosenSeasonAudios(group, seasonAudioSel)) });
+        for (const episode of detail?.seasons?.find((season) => season.number === group.number)?.episodes || []) {
+          if (isQueued(covered, episode.season, episode.episode)) refs.add(`${episode.season}:${episode.episode}`);
+        }
+      }
+      return { refs, whole: false };
+    },
+    [jobs, id, settings.outputPath, quality, settings.container, detail, audioSel, usesSeasonAudio, seasonGroups, seasonAudioSel],
   );
 
   // The same thing in this card's own key format, so it compares directly
@@ -245,6 +272,11 @@ export function TitleDetail({
     setSeeded(true);
     setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
 
+    if (usesSeasonAudio) {
+      setSeasonAudioSel(seedSeasonAudio(id, seasonGroups, downloadedFiles));
+      return;
+    }
+
     if (!detail.audios.length) return;
     // What to pre-tick, most truthful source first: the voiceover the episodes on
     // disk are actually in, then this title's own remembered choice, then the
@@ -268,17 +300,22 @@ export function TitleDetail({
     // was what put the message on titles the user had never touched.
     setAudioSel(new Set());
     setAudioPrefMissing(onDisk.length > 0 || (remembered.scoped && remembered.prefs.length > 0));
-  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, matchingDownloads, downloadedFiles, queuedKeys, id]);
+  }, [detail, downloadedReady, seeded, allEpKeys, downloaded, matchingDownloads, downloadedFiles, queuedKeys, id, usesSeasonAudio, seasonGroups]);
 
   // A changed quality or voiceover needs a fresh missing-episode selection.
   // Keep manual episode choices while this selection remains unchanged.
   useEffect(() => {
     if (!seeded || !downloadedReady) return;
-    const signature = JSON.stringify([id, quality, settings.container, [...audioSel].sort()]);
+    const signature = JSON.stringify([id, quality, settings.container, [...audioSel].sort(),
+      usesSeasonAudio ? seasonGroups.map((group) => [...seasonAudioSel[group.number] || []].sort()) : null]);
     if (selectionVersion.current === signature) return;
     selectionVersion.current = signature;
-    setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
-  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, matchingDownloads, queuedKeys]);
+    if (usesSeasonAudio && episodeSelectionEdited.current) {
+      setEpSel((cur) => cur ? new Set([...cur].filter((key) => !queuedKeys.has(key) && !matchingDownloads.has(key))) : cur);
+    } else {
+      setEpSel(initialEpisodeSelection(allEpKeys, matchingDownloads, queuedKeys));
+    }
+  }, [seeded, downloadedReady, id, quality, settings.container, audioSel, allEpKeys, matchingDownloads, queuedKeys, usesSeasonAudio, seasonGroups, seasonAudioSel]);
 
   const toggleAudio = (label: string) =>
     setAudioSel((cur) => {
@@ -287,12 +324,20 @@ export function TitleDetail({
       return next;
     });
 
-  const needsAudio = !!detail?.audios.length && audioSel.size === 0;
+  const toggleSeasonAudio = (season: number, label: string) => setSeasonAudioSel((cur) => {
+    const next = new Set(cur[season] || []);
+    next.has(label) ? next.delete(label) : next.add(label);
+    return { ...cur, [season]: next };
+  });
+  const needsAudio = usesSeasonAudio
+    ? seasonGroups.some((group) => seasonAudioIssue(group, seasonAudioSel, epSel || new Set()))
+    : !!detail?.audios.length && audioSel.size === 0;
   const allAudioOn = !!detail && detail.audios.length > 0 && audioSel.size === detail.audios.length;
   const toggleAllAudio = () =>
     setAudioSel(() => (allAudioOn ? new Set() : new Set((detail?.audios || []).map((a) => a.label))));
 
   const toggleEpisode = (key: string) => {
+    episodeSelectionEdited.current = true;
     if (queuedKeys.has(key)) return; // already lined up — nothing to select
     setEpSel((cur) => {
       const next = new Set(cur ?? []);
@@ -303,6 +348,7 @@ export function TitleDetail({
 
   const toggleSeason = (season: number) =>
     setEpSel((cur) => {
+      episodeSelectionEdited.current = true;
       const next = new Set(cur ?? []);
       const eps = (detail?.seasons?.find((s) => s.number === season)?.episodes ?? []).filter(
         (e) => !queuedKeys.has(epKey(e.season, e.episode)),
@@ -362,7 +408,7 @@ export function TitleDetail({
       return;
     }
     const chosenAudios = detail.audios.filter((a) => audioSel.has(a.label));
-    if (detail.audios.length > 0 && chosenAudios.length === 0) {
+    if (needsAudio) {
       toast(t("Select at least one voiceover"), "error");
       return;
     }
@@ -374,13 +420,13 @@ export function TitleDetail({
     // identity, the same thing the specs above match on — remembering the whole
     // label made the next title claim the voiceover was unavailable whenever
     // kino.pub filed the same studio under a different type.
-    writeAudioPref(id, chosenAudios.map(audioIdentity));
+    if (!usesSeasonAudio) writeAudioPref(id, chosenAudios.map(audioIdentity));
     const seedTitles = Object.fromEntries(
       (detail.seasons || []).flatMap((s) => s.episodes.map((e) => [epKey(e.season, e.episode), e.title])),
     );
     setStarting(true);
     try {
-      await api.startJob({
+      const request = {
         url: detail.itemUrl,
         outputPath: settings.outputPath,
         quality,
@@ -403,7 +449,19 @@ export function TitleDetail({
         seedTitle: detail.title,
         seedPoster: detail.poster,
         seedTitles,
-      });
+      };
+      if (usesSeasonAudio) {
+        for (const group of seasonGroups) {
+          const keys = group.episodeKeys.filter((key) => epSel?.has(key) && !queuedKeys.has(key));
+          if (!keys.length) continue;
+          await api.startJob({ ...request, seasons: String(group.number), episodeKeys: keys,
+            audioSpecs: audioSelectionSpecs(chosenSeasonAudios(group, seasonAudioSel)) });
+          rememberSeasonAudio(id, group, seasonAudioSel);
+          setEpSel((cur) => cur ? new Set([...cur].filter((key) => !keys.includes(key))) : cur);
+        }
+      } else {
+        await api.startJob(request);
+      }
       // No local "just queued" flag: the job list is the truth, and it flips the
       // button to "In the queue" as soon as the new job lands in it.
       toast(t("Added to the queue"), "success");
@@ -564,26 +622,28 @@ export function TitleDetail({
                 icon={<Mic2 className="h-4 w-4" />}
                 title={t("Voiceover")}
                 hint={
-                  allAudioOn
+                  usesSeasonAudio ? undefined : allAudioOn
                     ? t("(all selected)")
                     : audioSel.size === 0
                       ? t("(none)")
                       : t("({n} selected)", { n: audioSel.size })
                 }
                 action={
-                  detail.audios.length > 1 && (
+                  !usesSeasonAudio && detail.audios.length > 1 && (
                     <button onClick={toggleAllAudio} className="text-gold-300 transition hover:text-gold-200">
                       {allAudioOn ? t("Deselect all") : t("Select all")}
                     </button>
                   )
                 }
               >
-                {audioPrefMissing && detail.audios.length > 0 && (
+                {!usesSeasonAudio && audioPrefMissing && detail.audios.length > 0 && (
                   <p className="mb-2 text-xs text-gold-300/90">
                     {t("Your last voiceover isn't available here — pick another.")}
                   </p>
                 )}
-                {detail.audios.length === 0 ? (
+                {usesSeasonAudio ? (
+                  <SeasonAudioPicker groups={seasonGroups} selected={seasonAudioSel} episodes={epSel || new Set()} onToggle={toggleSeasonAudio} />
+                ) : detail.audios.length === 0 ? (
                   <p className="text-xs text-slate-500">
                     {t("Voiceover list appears after sign-in / for available titles.")}
                   </p>
@@ -604,22 +664,23 @@ export function TitleDetail({
                         <button
                           className="text-slate-400 transition hover:text-sky-300"
                           title={t("Select episodes missing the selected quality or voiceover")}
-                          onClick={() =>
-                            setEpSel(new Set(allEpKeys.filter((k) => !matchingDownloads.has(k) && !queuedKeys.has(k))))
-                          }
+                          onClick={() => {
+                            episodeSelectionEdited.current = true;
+                            setEpSel(new Set(allEpKeys.filter((k) => !matchingDownloads.has(k) && !queuedKeys.has(k))));
+                          }}
                         >
                           {t("Only missing")}
                         </button>
                       )}
                       <button
                         className="text-slate-400 transition hover:text-gold-300"
-                        onClick={() => setEpSel(new Set(allEpKeys.filter((k) => !queuedKeys.has(k))))}
+                        onClick={() => { episodeSelectionEdited.current = true; setEpSel(new Set(allEpKeys.filter((k) => !queuedKeys.has(k)))); }}
                       >
                         {t("Select all")}
                       </button>
                       <button
                         className="text-slate-400 transition hover:text-gold-300"
-                        onClick={() => setEpSel(new Set())}
+                        onClick={() => { episodeSelectionEdited.current = true; setEpSel(new Set()); }}
                       >
                         {t("Deselect all")}
                       </button>
@@ -876,7 +937,7 @@ export function TitleDetail({
                     disabled={
                       starting ||
                       (isSerial && selectedCount === 0) ||
-                      (detail.audios.length > 0 && audioSel.size === 0)
+                      needsAudio
                     }
                   >
                     {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
