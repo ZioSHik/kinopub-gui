@@ -138,6 +138,26 @@ export function Player({
   const [askResume, setAskResume] = useState(false);
   const resumeRef = useRef(0);
 
+  // Keep playback priority across buffering gaps, but release it on pause,
+  // failure or close. Serialize release after an in-flight heartbeat so an old
+  // response cannot resurrect a closed player. The server also expires leases.
+  const wantsPlayback = !error && (loading || (!paused && !askResume));
+  useEffect(() => {
+    if (!wantsPlayback) return;
+    const lease = crypto.randomUUID();
+    let pending: Promise<unknown> | null = null;
+    const refresh = () => {
+      if (pending) return;
+      pending = api.playbackLease(lease, true).catch(() => {}).finally(() => { pending = null; });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    return () => {
+      window.clearInterval(timer);
+      void (pending || Promise.resolve()).then(() => api.playbackLease(lease, false)).catch(() => {});
+    };
+  }, [wantsPlayback]);
+
   // Progress reporting. markRef is reassigned every render so it always sees the
   // current id/season/episode; lastMark throttles to MARK_INTERVAL playback secs.
   const markRef = useRef<(force: boolean) => void>(() => {});
@@ -246,6 +266,7 @@ export function Player({
       markRef.current(true);
       const n = nextRef.current;
       if (n) onChangeRef.current?.(n.season, n.episode);
+      else setPaused(true);
     };
     v.addEventListener("play", onPlay);
     v.addEventListener("pause", onPause);

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/services/proxyprovider"
 )
 
@@ -87,6 +89,9 @@ func (s *Server) handleHLSProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if value := resp.Header.Get("Retry-After"); value != "" {
+		w.Header().Set("Retry-After", value)
+	}
 
 	isManifest := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "mpegurl") ||
 		strings.HasSuffix(strings.ToLower(target.Path), ".m3u8")
@@ -227,15 +232,25 @@ func (s *Server) fetchHLS(ctx context.Context, raw, rangeHeader string) (*http.R
 			case <-time.After(time.Duration(attempt) * 400 * time.Millisecond):
 			}
 		}
-		// One concurrency slot per attempt, held only for this request.
+		// Playback shares the downloader's cooldown and request budget, with
+		// priority over new background fragments. hlsSem also bounds hls.js fanout.
+		releaseCDN := func() {}
+		if s.mgr != nil {
+			releaseCDN, err = s.mgr.limiter.AcquirePlayback(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
 		select {
 		case s.hlsSem <- struct{}{}:
 		case <-ctx.Done():
+			releaseCDN()
 			return nil, ctx.Err()
 		}
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 		if rerr != nil {
 			<-s.hlsSem
+			releaseCDN()
 			return nil, rerr
 		}
 		if rangeHeader != "" {
@@ -246,16 +261,22 @@ func (s *Server) fetchHLS(ctx context.Context, raw, rangeHeader string) (*http.R
 		resp, derr := hc.Do(req)
 		if derr != nil {
 			<-s.hlsSem
+			releaseCDN()
 			lastErr = derr
 			continue
 		}
-		if isTransientHLS(resp.StatusCode) && attempt < attempts-1 {
+		var cdnErr error
+		if s.mgr != nil {
+			cdnErr = s.mgr.limiter.ObserveResponse(resp)
+		}
+		if isTransientHLS(resp.StatusCode) && !errors.Is(cdnErr, domain.ErrCDNSessionLimit) && attempt < attempts-1 {
 			resp.Body.Close()
 			<-s.hlsSem
+			releaseCDN()
 			continue
 		}
 		// Hold the slot until the caller finishes streaming the body.
-		resp.Body = &slotBody{ReadCloser: resp.Body, sem: s.hlsSem}
+		resp.Body = &slotBody{ReadCloser: resp.Body, sem: s.hlsSem, release: releaseCDN}
 		return resp, nil
 	}
 	return nil, lastErr
@@ -264,13 +285,19 @@ func (s *Server) fetchHLS(ctx context.Context, raw, rangeHeader string) (*http.R
 // slotBody releases a concurrency slot when the proxied response body is closed.
 type slotBody struct {
 	io.ReadCloser
-	sem  chan struct{}
-	once sync.Once
+	sem     chan struct{}
+	release func()
+	once    sync.Once
 }
 
 func (b *slotBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.once.Do(func() { <-b.sem })
+	b.once.Do(func() {
+		<-b.sem
+		if b.release != nil {
+			b.release()
+		}
+	})
 	return err
 }
 

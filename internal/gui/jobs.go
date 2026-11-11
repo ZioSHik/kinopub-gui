@@ -219,7 +219,6 @@ type Job struct {
 
 	cancel          context.CancelFunc
 	cancelRequested bool            // set if canceled before its engine started
-	urgent          bool            // scheduler: may bypass maxActive (guarded by JobManager.mu)
 	done            <-chan struct{} // closed when the job's context is canceled/finished
 	dirty           bool            // pending broadcast
 	removed         bool            // card deleted from the manager; resume/rerun must not revive it (guarded by mu)
@@ -407,7 +406,7 @@ func newJobManager(hub *Hub) *JobManager {
 		hub:  hub,
 		// No handlers: the controller's debug chatter belongs to no single job's
 		// card, and there is no log view to send it to.
-		limiter: hlsdownloader.NewLimiter(0, logx.New(nil)),
+		limiter: hlsdownloader.NewCDNLimiter(logx.New(nil)),
 	}
 	go m.flushLoop()
 	return m
@@ -613,10 +612,7 @@ func (m *JobManager) submit(j *Job, front bool) {
 	m.add(j)
 	m.mu.Lock()
 	if front {
-		// Front-of-queue jobs are per-episode retries: besides jumping the line
-		// they bypass the global concurrency limit so they truly start "now",
-		// even when the parent download already occupies every slot.
-		j.urgent = true
+		// A per-episode retry has queue priority, not an extra network session.
 		m.pending = append([]*Job{j}, m.pending...)
 	} else {
 		m.pending = append(m.pending, j)
@@ -649,11 +645,8 @@ func (m *JobManager) dispatch() {
 			continue
 		}
 		hasSlot := m.maxActive <= 0 || m.running < m.maxActive
-		// Start when within the limit, or when the head job is urgent (a
-		// per-episode retry) — urgent jobs accept transient over-subscription,
-		// which self-balances as running jobs finish. A non-urgent head with no
-		// slot blocks the queue (FIFO), so it waits for a slot.
-		if !hasSlot && !j.urgent {
+		// Priority never bypasses admission; all jobs share the CDN budget.
+		if !hasSlot {
 			break
 		}
 		m.pending = append(m.pending[:i], m.pending[i+1:]...)

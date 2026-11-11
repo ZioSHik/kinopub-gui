@@ -247,7 +247,7 @@ func TestSchedulerPauseResumeQueuedJob(t *testing.T) {
 	}
 }
 
-func TestSchedulerUrgentBypassesLimit(t *testing.T) {
+func TestSchedulerUrgentPrioritizesWithoutBypassingLimit(t *testing.T) {
 	m, started, mu := newTestManager()
 	m.setMaxActive(1)
 
@@ -264,20 +264,19 @@ func TestSchedulerUrgentBypassesLimit(t *testing.T) {
 		t.Fatalf("normal job must queue behind the limit, got %v", got)
 	}
 
-	// An urgent (front) job — a per-episode retry — starts immediately despite
-	// the slot being full.
+	// An urgent per-episode retry gets the next slot, never an extra one.
 	urgent := newTestJob(m)
 	m.submit(urgent, true)
-	got := snapshotStarted(mu, started)
-	if len(got) != 2 || got[1] != urgent.id {
-		t.Fatalf("urgent job should bypass the limit and start now, got %v", got)
+	if got := snapshotStarted(mu, started); len(got) != 1 {
+		t.Fatalf("urgent job bypassed admission: %v", got)
 	}
-	// The non-urgent B is still waiting.
-	m.mu.RLock()
-	pending := len(m.pending)
-	m.mu.RUnlock()
-	if pending != 1 {
-		t.Fatalf("normal job B should still be queued, pending=%d", pending)
+	m.jobFinished(a)
+	if got := snapshotStarted(mu, started); len(got) != 2 || got[1] != urgent.id {
+		t.Fatalf("urgent job did not take the next slot: %v", got)
+	}
+	m.jobFinished(urgent)
+	if got := snapshotStarted(mu, started); len(got) != 3 || got[2] != b.id {
+		t.Fatalf("normal job was lost: %v", got)
 	}
 }
 

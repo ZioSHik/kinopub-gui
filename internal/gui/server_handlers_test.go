@@ -360,6 +360,30 @@ func TestHandleFS(t *testing.T) {
 	}
 }
 
+func TestHandleFS_EmptyDirectoryReturnsArray(t *testing.T) {
+	s := newTestServer(t)
+	for _, hiddenOnly := range []bool{false, true} {
+		dir := t.TempDir()
+		if hiddenOnly {
+			if err := os.Mkdir(filepath.Join(dir, ".hidden"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := httptest.NewRecorder()
+		s.handleFS(w, httptest.NewRequest("GET", "/api/fs?path="+dir, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		var listing FSListing
+		if err := json.Unmarshal(w.Body.Bytes(), &listing); err != nil {
+			t.Fatal(err)
+		}
+		if listing.Dirs == nil || len(listing.Dirs) != 0 {
+			t.Fatalf("empty folder must return [] rather than null: %s", w.Body.String())
+		}
+	}
+}
+
 func TestHandleDoctor_EmptyDir(t *testing.T) {
 	s := newTestServer(t)
 	dir := t.TempDir() // no state files

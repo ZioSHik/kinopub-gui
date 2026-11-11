@@ -42,10 +42,6 @@ const (
 	// — Wi-Fi to Ethernet, a video call ending, another download finishing.
 	settleFor = 30 * time.Second
 
-	// maxThrottleCoolDown bounds how long a single Retry-After may park every
-	// worker, so a hostile or broken header can't stall an episode indefinitely.
-	maxThrottleCoolDown = 15 * time.Second
-
 	// acquirePoll is a safety net: a waiter re-checks its condition this often
 	// even if it misses a wake-up signal. It only bounds worst-case latency
 	// before a raised limit is noticed, which is irrelevant next to the seconds a
@@ -81,7 +77,7 @@ type adaptiveLimiter struct {
 	mu       sync.Mutex
 	limit    int // segments allowed in flight right now
 	inFlight int
-	min      int // never drop below this (one slot per track of every active episode)
+	min      int // track floor, capped by the CDN policy when enabled
 
 	// ceiling is the controller's own cap, and it moves: when the limit is pinned
 	// against it and one more window still shows more throughput, the pipe is
@@ -95,17 +91,25 @@ type adaptiveLimiter struct {
 	// the tracks of the episodes currently downloading through it. min is the
 	// larger of the two, so episodes joining and leaving a shared limiter raise
 	// and lower the guaranteed floor without ever dropping it below the baseline.
-	baseMin    int
-	trackFloor int
+	baseMin            int
+	trackFloor         int
+	trackFloorCap      int // GUI policy: extra audio tracks must not force more sockets
+	serializeDownloads bool
+	episodeActive      bool
+	playbackRequests   int
+	playbackLeases     map[string]time.Time
 
 	// Current measurement window.
 	windowStart time.Time
 	windowBytes int64
 	windowDone  int
 
-	lastRate  float64   // rate of the previous completed window (0 = none yet)
-	settledAt time.Time // hold the limit until this instant, then probe again
-	coolUntil time.Time // no new segment may start before this (429 back-pressure)
+	lastRate     float64   // rate of the previous completed window (0 = none yet)
+	settledAt    time.Time // hold the limit until this instant, then probe again
+	coolUntil    time.Time // no new segment may start before this (429 back-pressure)
+	sessionUntil time.Time // account session limit: pause new CDN requests together
+	reprobeLimit int
+	reprobeRate  float64
 
 	peak int // highest limit reached, for the closing log line
 
@@ -160,13 +164,40 @@ func NewLimiter(start int, logger domain.Logger) *Limiter {
 	return newAdaptiveLimiter(start, 1, logger)
 }
 
+// NewCDNLimiter separates episode admission from measured segment throughput.
+// One episode uses the network; another worker may mux a completed episode.
+func NewCDNLimiter(logger domain.Logger) *Limiter {
+	l := NewLimiter(0, logger)
+	l.trackFloorCap = 2
+	l.serializeDownloads = true
+	return l
+}
+
+// NewLimiterWithCeiling keeps the shared request budget below an explicit cap,
+// including when the throughput controller or additional tracks request more.
+func NewLimiterWithCeiling(start, ceiling int, logger domain.Logger) *Limiter {
+	if ceiling < 1 {
+		ceiling = 1
+	}
+	if ceiling > hardSegmentConcurrency {
+		ceiling = hardSegmentConcurrency
+	}
+	l := NewLimiter(start, logger)
+	l.ceiling, l.hardCeiling = ceiling, ceiling
+	if l.limit > ceiling {
+		l.limit = ceiling
+	}
+	l.peak = l.limit
+	return l
+}
+
 // Stats is a snapshot of the controller, for callers deciding whether the link
 // has room for more work than it is currently being given.
 type Stats struct {
 	Limit     int  // segments allowed in flight right now
 	InFlight  int  // segments actually moving
 	Ceiling   int  // the controller's current self-imposed cap
-	Throttled bool // the CDN has us parked in a cool-down
+	Throttled bool // background requests are parked by CDN cooldown or playback
 }
 
 // Stats reports the live state of the controller. Safe for concurrent use.
@@ -177,14 +208,44 @@ func (l *adaptiveLimiter) Stats() Stats {
 		Limit:     l.limit,
 		InFlight:  l.inFlight,
 		Ceiling:   l.capLocked(),
-		Throttled: l.now().Before(l.coolUntil),
+		Throttled: l.now().Before(l.coolUntil) || l.now().Before(l.sessionUntil) || l.playbackActiveLocked(),
 	}
 }
 
-// addTracks registers an episode's tracks with a shared limiter: the floor rises
-// so every track of every episode downloading right now keeps one segment slot,
-// and audio never starves behind video. Paired with removeTracks when the
-// episode finishes.
+// Account session exhaustion needs time for an existing playback session to
+// expire. Opening the next episode immediately would consume another session.
+func (l *adaptiveLimiter) sessionLimited(retryAfter time.Duration) {
+	if retryAfter < time.Minute {
+		retryAfter = time.Minute
+	}
+	l.mu.Lock()
+	until := l.now().Add(retryAfter)
+	if until.After(l.sessionUntil) {
+		l.sessionUntil = until
+	}
+	// Do not resume at the concurrency that just exhausted the account. The
+	// ceiling stays adaptive: successful measurements can earn the speed back.
+	l.trackFloorCap = 2
+	l.applyFloorLocked()
+	l.limit = min(2, l.hardCeiling)
+	l.ceiling = min(maxSegmentConcurrency, l.hardCeiling)
+	l.lastRate, l.reprobeRate, l.reprobeLimit = 0, 0, 0
+	l.settledAt = l.sessionUntil
+	l.windowStart, l.windowBytes, l.windowDone = time.Time{}, 0, 0
+	l.mu.Unlock()
+	l.signal()
+}
+
+func (l *adaptiveLimiter) waitSession(ctx context.Context) error {
+	// Already admitted requests may finish while playback starts. Waiting on a
+	// player lease here would hold the very slots that the player needs.
+	return l.waitReady(ctx, true)
+}
+
+// addTracks registers an episode's tracks with a shared limiter. The generic
+// policy grants one slot per track; the GUI caps that floor at two so selecting
+// many voiceovers does not override measured concurrency or CDN back-pressure.
+// Paired with removeTracks when the episode finishes.
 func (l *adaptiveLimiter) addTracks(n int) {
 	if n < 1 {
 		return
@@ -217,6 +278,9 @@ func (l *adaptiveLimiter) applyFloorLocked() {
 	min := l.baseMin
 	if l.trackFloor > min {
 		min = l.trackFloor
+	}
+	if l.trackFloorCap > 0 && min > l.trackFloorCap {
+		min = l.trackFloorCap
 	}
 	if min < 1 {
 		min = 1
@@ -254,14 +318,18 @@ func (l *adaptiveLimiter) capLocked() int {
 // acquire blocks until a slot is free and any throttle cool-down has expired.
 // It returns ctx.Err() if the context is cancelled while waiting.
 func (l *adaptiveLimiter) acquire(ctx context.Context) error {
+	return l.acquireFor(ctx, false)
+}
+
+func (l *adaptiveLimiter) acquireFor(ctx context.Context, playback bool) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
 		l.mu.Lock()
-		cool := l.coolUntil.Sub(l.now())
-		if cool <= 0 && l.inFlight < l.limit {
+		cool := max(l.coolUntil.Sub(l.now()), l.sessionUntil.Sub(l.now()))
+		if cool <= 0 && (playback || !l.playbackActiveLocked()) && l.inFlight < l.limit {
 			// A fresh measurement window opens when the pipe wakes from idle. A
 			// window left spanning the gap (an episode's ffmpeg remux, the space
 			// between jobs — the limiter is shared process-wide) would close over
@@ -307,6 +375,12 @@ func (l *adaptiveLimiter) release() {
 func (l *adaptiveLimiter) done(n int64) {
 	l.mu.Lock()
 	l.inFlight--
+	if l.playbackActiveLocked() || l.now().Before(l.sessionUntil) || l.now().Before(l.coolUntil) {
+		l.windowStart, l.windowBytes, l.windowDone = time.Time{}, 0, 0
+		l.mu.Unlock()
+		l.signal()
+		return
+	}
 	l.windowBytes += n
 	l.windowDone++
 
@@ -322,7 +396,7 @@ func (l *adaptiveLimiter) done(n int64) {
 }
 
 // throttle applies CDN back-pressure: it parks every worker for retryAfter (the
-// server's own hint, clamped) and halves the limit, because a 429 is proof we
+// server's own hint) and halves the limit, because a 429 is proof we
 // were above the line rather than a guess about it.
 func (l *adaptiveLimiter) throttle(retryAfter time.Duration) {
 	l.mu.Lock()
@@ -330,9 +404,6 @@ func (l *adaptiveLimiter) throttle(retryAfter time.Duration) {
 
 	if retryAfter <= 0 {
 		retryAfter = time.Second
-	}
-	if retryAfter > maxThrottleCoolDown {
-		retryAfter = maxThrottleCoolDown
 	}
 	alreadyCooling := now.Before(l.coolUntil)
 	if until := now.Add(retryAfter); until.After(l.coolUntil) {
@@ -367,10 +438,12 @@ func (l *adaptiveLimiter) throttle(retryAfter time.Duration) {
 	// the new limit. Drop it and start clean, and don't probe upward for a while.
 	l.settledAt = now.Add(settleFor)
 	l.lastRate = 0
+	l.reprobeLimit, l.reprobeRate = 0, 0
 	l.windowStart, l.windowBytes, l.windowDone = now, 0, 0
 
 	limit, ceiling := l.limit, l.ceiling
 	l.mu.Unlock()
+	l.signal()
 
 	l.logger.Debug("CDN throttled us, backing off",
 		domain.F("retry_after", retryAfter.String()),
@@ -405,6 +478,29 @@ func (l *adaptiveLimiter) advanceLocked(rate float64, now time.Time) {
 	if now.Before(l.settledAt) {
 		return
 	}
+	if l.reprobeLimit > 0 {
+		base, rateBefore := l.reprobeLimit, l.reprobeRate
+		l.reprobeLimit, l.reprobeRate = 0, 0
+		if rate <= rateBefore*growThreshold {
+			l.setLimitLocked(base)
+			l.settledAt = now.Add(settleFor)
+			return
+		}
+	}
+	// A settled plateau must actually probe again, even if its rate stayed
+	// constant. Previously it re-armed the settle timer forever at the same cap.
+	if !l.settledAt.IsZero() && prev > 0 && rate >= prev*shrinkThreshold {
+		l.settledAt = time.Time{}
+		base := l.limit
+		l.setLimitLocked(base + 1)
+		if l.limit > base {
+			l.reprobeLimit, l.reprobeRate = base, rate
+		} else {
+			l.settledAt = now.Add(settleFor)
+		}
+		return
+	}
+	l.settledAt = time.Time{}
 
 	switch {
 	case prev == 0:
@@ -487,7 +583,9 @@ func parseRetryAfter(h string, now time.Time) time.Duration {
 		if secs <= 0 {
 			return 0
 		}
-		return time.Duration(secs) * time.Second
+		// Saturate rather than overflow into a negative wait for a bad header.
+		const maxSeconds = int64(1<<63-1) / int64(time.Second)
+		return time.Duration(min(int64(secs), maxSeconds)) * time.Second
 	}
 	if t, err := http.ParseTime(h); err == nil {
 		if d := t.Sub(now); d > 0 {

@@ -2,6 +2,7 @@ package kinopub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -424,12 +425,9 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 					domain.F("attempts", pe.attempts),
 					domain.F("error", err.Error()),
 				)
-				// Budget exhausted — clean up the segment temp directory that
-				// was preserved across retries for resume (unless the run is being
-				// paused, where partial data is kept for a later resume).
-				if e.deps.Paused == nil || !e.deps.Paused() {
-					dropCanceledTemp(pe.ep)
-				}
+				// A bounded retry budget stops automatic attempts, not the user's
+				// ability to resume. Keep verified fragments for Retry/restart.
+				// Explicit cancellation and successful muxing still clean them up.
 				mu.Lock()
 				failed++
 				outcomes = append(outcomes, domain.JobOutcome{Key: pe.ep.Key, Err: err, Attempts: pe.attempts})
@@ -438,6 +436,9 @@ func (e *engine) runHLS(ctx context.Context, cfg domain.RunConfig) (domain.RunRe
 				return
 			}
 			wait := e.backoffFor(pe.attempts)
+			if errors.Is(err, domain.ErrCDNSessionLimit) && wait < time.Minute {
+				wait = time.Minute
+			}
 			// Capture everything read for the log/report BEFORE re-parking: once pe
 			// is back in retryQueue another worker may pick it up immediately (the
 			// retry backoff is zero in tests), so touching pe past the unlock races.
@@ -1017,17 +1018,14 @@ func (e *engine) attemptHLSEpisode(
 		if isTransientDownloadError(dlErr) {
 			return epRetryable, dlErr
 		}
-		// Terminal failure: clean up the segment temp directory so it does not
-		// accumulate on disk. Retryable paths deliberately leave it in place so
-		// the next attempt can resume from already-downloaded segments.
-		os.RemoveAll(tsPath + ".hls-tmp")
+		// Keep verified fragments even for an authorization/configuration error:
+		// the user can fix it and retry. Explicit cancellation removes them.
 		return epFatal, dlErr
 	}
 
 	if !augment && len(ep.Subtitles) > 0 && len(hlsResult.SubtitleTracks) == 0 {
 		subtitles, ok := e.deps.HLSDownloader.(domain.SubtitleDownloader)
 		if !ok {
-			os.RemoveAll(hlsResult.TempDir)
 			return epFatal, fmt.Errorf("downloader does not support external subtitles")
 		}
 		tracks, err := subtitles.DownloadSubtitles(ctx, ep.Subtitles, hlsResult.TempDir)
@@ -1035,7 +1033,6 @@ func (e *engine) attemptHLSEpisode(
 			if ctx.Err() != nil || isTransientDownloadError(err) {
 				return epRetryable, err
 			}
-			os.RemoveAll(hlsResult.TempDir)
 			return epFatal, err
 		}
 		hlsResult.SubtitleTracks = tracks
@@ -1075,17 +1072,21 @@ func (e *engine) attemptHLSEpisode(
 		remuxErr = fmt.Errorf("downloader does not support HLS muxing")
 	}
 
-	// Clean up temp segment files regardless of mux outcome.
-	if hlsResult.TempDir != "" {
-		os.RemoveAll(hlsResult.TempDir)
-	}
-
 	if remuxErr != nil {
 		log.Warn("remux failed",
 			domain.F("episode", epLabel),
 			domain.F("error", remuxErr.Error()),
 		)
+		if ctx.Err() != nil {
+			return epRetryable, remuxErr
+		}
 		return epFatal, remuxErr
+	}
+
+	// Only a successful mux makes the source fragments expendable. A pause,
+	// crash or ffmpeg error must not turn Retry into another full download.
+	if hlsResult.TempDir != "" {
+		os.RemoveAll(hlsResult.TempDir)
 	}
 
 	// Mark completed.
@@ -1176,6 +1177,9 @@ var transientErrorMarkers = []string{
 func isTransientDownloadError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, domain.ErrCDNSessionLimit) {
+		return true
 	}
 	msg := strings.ToLower(err.Error())
 	for _, marker := range transientErrorMarkers {

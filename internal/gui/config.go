@@ -19,42 +19,13 @@ import (
 // UA that solved the challenge, so we default to a realistic Safari UA.
 const defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
 
-// Download tuning. These were user-facing knobs ("Concurrency", "Retries",
-// "Max simultaneous downloads") until it became clear there is one right answer
-// and the wrong ones only hurt, so they are fixed here.
-//
-// episodeConcurrency: this is NOT a bandwidth knob — the segment budget that
-// fills the link is set by a throughput controller shared across every download
-// in the process (hlsdownloader.Limiter), which measures the link and ramps itself,
-// so raising this number does not buy more speed. The second episode exists
-// only to keep the network busy while the first one sits in its ffmpeg remux
-// phase — CPU-bound, zero network. A third would just push back the first
-// finished file for no throughput in return.
-//
-// episodeRetries: these fire only on retryable failures (403/429/5xx, timeouts,
-// connection resets, DNS) and back off 1→2→4→8→16s, so 5 means up to 6 attempts
-// spread over ~31s — enough to ride out a CDN blip or a re-signed token, still
-// bounded. Per-segment and per-manifest retries sit below this level and already
-// absorb the short-lived failures.
-//
-// maxActiveDownloads: the resting limit. Bandwidth is one fixed pie, so running
-// several titles at once normally only divides it — nothing finishes sooner in
-// total while every single title finishes later. One at a time gives the fastest
-// first watchable file; the wait queue is reorderable, and per-episode retries
-// are flagged urgent so they bypass this limit and still start immediately.
-//
-// maxAdaptiveDownloads: the exception the admission controller may grant. There
-// is one case where the resting limit leaves throughput on the table — when the
-// running title is not claiming the segment budget at all, because it is
-// remuxing with ffmpeg, scraping, or resolving a manifest. JobManager.admissionLoop
-// watches the shared controller for exactly that and lends out the second slot
-// while it lasts. It is safe to lend precisely because the segment budget is
-// shared: an extra title divides that one budget instead of multiplying it.
-//
-// admissionPoll / admissionWindowSamples / admissionIdleShare: how that is
-// measured — a sample every 2s over a ~30s window, and the pipe has to have been
-// idle for most of it. The window is what keeps the seconds every job spends
-// resolving from quietly making two-at-a-time the norm.
+// Network and CPU work have separate budgets. Two episode workers allow the
+// next download to overlap ffmpeg muxing; the shared CDN limiter admits only
+// one downloading episode and tunes its fragment concurrency from throughput.
+// A second job may use an otherwise idle pipe under the same admission gate.
+// Manual retries go to the front of the queue without bypassing its job limit.
+// Session exhaustion pauses all CDN requests for at least a minute (or longer
+// Retry-After), then restarts conservatively and measures its way back up.
 const (
 	episodeConcurrency   = 2
 	episodeRetries       = 5

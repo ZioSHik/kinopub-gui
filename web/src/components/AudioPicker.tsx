@@ -50,13 +50,45 @@ function trackLabel(audio: DiscoverAudio, type: string): string {
   return parts.join(" · ") || audio.label;
 }
 
-export function AudioPicker({ audios, selected, onToggle }: {
+export function AudioPicker({ audios, selected, onToggle, compact = false }: {
   audios: DiscoverAudio[];
   selected: Set<string>;
   onToggle: (label: string) => void;
+  compact?: boolean;
 }) {
   const { t } = useI18n();
   const id = useId();
+  if (compact) return (
+    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+      {groupAudios(audios).flatMap((group) => group.tracks.map((audio) => {
+        const on = selected.has(audio.label);
+        const channels = audio.channels === 6 ? "5.1" : audio.channels === 8 ? "7.1" : audio.channels ? `${audio.channels}ch` : "";
+        const format = [audio.codec?.toUpperCase(), channels].filter(Boolean).join(" ");
+        const name = audio.author || (group.type ? t(group.title) : audio.label);
+        const meta = [audio.author && t(group.title), audio.lang?.toUpperCase(), format].filter(Boolean).join(" · ");
+        return <button
+          key={audio.label}
+          type="button"
+          onClick={() => onToggle(audio.label)}
+          aria-label={audio.label}
+          aria-pressed={on}
+          title={audio.label}
+          className={clsx(
+            "flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold-400/60",
+            on ? "border-gold-500/35 bg-gold-500/[0.08] text-gold-200" : "border-transparent bg-white/[0.025] text-slate-300 hover:bg-white/[0.06]",
+          )}
+        >
+          <span aria-hidden="true" className={clsx("flex h-4 w-4 shrink-0 items-center justify-center rounded border", on ? "border-gold-400 bg-gold-400 text-ink-950" : "border-slate-600")}>
+            {on && <Check className="h-3 w-3" strokeWidth={3} />}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-xs font-medium">{name}</span>
+            {meta && <span className="mt-0.5 block truncate text-[10px] leading-tight text-slate-400">{meta}</span>}
+          </span>
+        </button>;
+      }))}
+    </div>
+  );
   return (
     <div className="space-y-3">
       {groupAudios(audios).map((group, index) => (

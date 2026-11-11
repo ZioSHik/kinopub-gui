@@ -327,16 +327,16 @@ func TestThrottleHalvesLimitAndParksWorkers(t *testing.T) {
 	}
 }
 
-func TestThrottleClampsAndNeverGoesBelowTheFloor(t *testing.T) {
+func TestThrottleHonorsLongRetryAfterAndNeverGoesBelowTheFloor(t *testing.T) {
 	l, _ := newTestLimiter(3, 3)
 
-	l.throttle(time.Hour) // absurd Retry-After
+	l.throttle(time.Hour)
 
 	if l.limit != 3 {
 		t.Errorf("limit = %d, want the floor 3", l.limit)
 	}
-	if got := l.coolUntil.Sub(l.now()); got != maxThrottleCoolDown {
-		t.Errorf("cool-down = %v, want it clamped to %v", got, maxThrottleCoolDown)
+	if got := l.coolUntil.Sub(l.now()); got != time.Hour {
+		t.Errorf("cool-down = %v, want the full Retry-After %v", got, time.Hour)
 	}
 }
 

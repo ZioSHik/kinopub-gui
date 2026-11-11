@@ -17,6 +17,9 @@ import { Field, Toggle } from "../components/ui";
 import { SeriesBrowser } from "../components/SeriesBrowser";
 import { DirPicker } from "../components/DirPicker";
 import { InstallFFmpeg } from "../components/InstallFFmpeg";
+import { SeasonAudioPicker } from "../components/SeasonAudioPicker";
+import { chosenSeasonAudios, rememberSeasonAudio, seasonAudioIssue, seedSeasonAudio, type SeasonAudioSelection } from "../lib/seasonAudio";
+import { audioSelectionSpecs } from "../lib/audio";
 
 const QUALITIES = [
   { v: "", label: "Auto (highest)" },
@@ -40,7 +43,7 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
     seasons: "",
     episodes: "",
     audio: "",
-    audioMenu: true,
+    audioMenu: false,
     force: false,
     dryRun: false,
     ffmpegArgs: "",
@@ -51,6 +54,9 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
 
   const [advanced, setAdvanced] = useState(false);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [seasonAudioSel, setSeasonAudioSel] = useState<SeasonAudioSelection>({});
+  const previewGeneration = useRef(0);
+  useEffect(() => () => { ++previewGeneration.current; }, []);
   // Per-episode selection (episode keys "S{n}E{n}"). null until a preview loads;
   // a preview seeds it with all not-yet-downloaded episodes.
   const [selectedKeys, setSelectedKeys] = useState<Set<string> | null>(null);
@@ -77,8 +83,25 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
     }));
   }, [settingsLoaded, settings]);
 
-  const set = <K extends keyof RunRequest>(k: K, v: RunRequest[K]) =>
+  const set = <K extends keyof RunRequest>(k: K, v: RunRequest[K]) => {
+    if (k === "url" || k === "outputPath" || k === "proxy" || k === "force") {
+      ++previewGeneration.current;
+      setPreview(null);
+      setSelectedKeys(null);
+      setSeasonAudioSel({});
+      setPreviewing(false);
+    }
     setForm((f) => ({ ...f, [k]: v }));
+  };
+  const seasonGroups = (preview?.seasons || []).map((season) => ({
+    number: season.number, audios: season.audios || [], episodeKeys: season.episodes.map((episode) => episode.key),
+  }));
+  const needsAudio = seasonGroups.some((group) => seasonAudioIssue(group, seasonAudioSel, selectedKeys || new Set()));
+  const toggleSeasonAudio = (season: number, label: string) => setSeasonAudioSel((cur) => {
+    const next = new Set(cur[season] || []);
+    next.has(label) ? next.delete(label) : next.add(label);
+    return { ...cur, [season]: next };
+  });
 
   const toggleEpisode = (key: string) =>
     setSelectedKeys((cur) => {
@@ -115,17 +138,25 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
       toast(t("Enter a kino.watch URL first"), "error");
       return;
     }
+    const generation = ++previewGeneration.current;
     setPreviewing(true);
+    setPreview(null);
+    setSelectedKeys(null);
     try {
       const r = await api.preview({ ...form, dryRun: true });
+      if (generation !== previewGeneration.current) return;
       setPreview(r);
       setSelectedKeys(new Set(selectableKeysOf(r)));
+      setSeasonAudioSel(seedSeasonAudio(r.seriesId, r.seasons.map((season) => ({
+        number: season.number, audios: season.audios || [], episodeKeys: season.episodes.map((episode) => episode.key),
+      })), [], r.isSerial !== false));
       toast(t('Resolved “{title}” · {n} episodes', { title: r.title, n: r.total }), "success");
     } catch (e: any) {
+      if (generation !== previewGeneration.current) return;
       errorToast(e.message, t("Preview failed"));
       setPreview(null);
     } finally {
-      setPreviewing(false);
+      if (generation === previewGeneration.current) setPreviewing(false);
     }
   };
 
@@ -138,6 +169,14 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
       toast(t("ffmpeg not found — install it to download"), "error");
       return;
     }
+    if (!preview || !selectedKeys?.size) {
+      toast(t("Preview this link before downloading."), "error");
+      return;
+    }
+    if (needsAudio) {
+      toast(t("Select at least one voiceover"), "error");
+      return;
+    }
     setStarting(true);
     try {
       const seedTitles = preview
@@ -145,16 +184,23 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
             preview.seasons.flatMap((s) => s.episodes.map((e) => [e.key, e.title])),
           )
         : null;
-      await api.startJob({
+      const request = {
         ...form,
         dryRun: false,
-        // Explicit per-episode selection from the browser. Omitted (→ all) when
-        // the user downloads without previewing.
+        // The preview owns the explicit episode selection.
         episodeKeys: preview && selectedKeys ? [...selectedKeys] : undefined,
         seedTitle: preview?.title || "",
         seedPoster: preview?.posterUrl || "",
         seedTitles,
-      });
+      };
+      for (const group of seasonGroups) {
+        const keys = group.episodeKeys.filter((key) => selectedKeys.has(key));
+        if (!keys.length) continue;
+        await api.startJob({ ...request, seasons: String(group.number), episodeKeys: keys, audio: "", audioMenu: false,
+          audioSpecs: audioSelectionSpecs(chosenSeasonAudios(group, seasonAudioSel)) });
+        rememberSeasonAudio(preview.seriesId, group, seasonAudioSel, preview.isSerial !== false);
+        setSelectedKeys((cur) => cur ? new Set([...cur].filter((key) => !keys.includes(key))) : cur);
+      }
       toast(t("Added to the queue"), "success");
     } catch (e: any) {
       errorToast(e.message, t("Failed to start"));
@@ -270,7 +316,7 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
           <button
             className="btn-primary"
             onClick={start}
-            disabled={starting || (!!preview && !!selectedKeys && selectedKeys.size === 0)}
+            disabled={starting || previewing || !preview || !selectedKeys?.size || needsAudio}
           >
             {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             {preview && selectedKeys ? t("Start download ({n})", { n: selectedKeys.size }) : t("Start download")}
@@ -280,8 +326,15 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
           )}
         </div>
         {!ffmpeg.ffmpegFound && <InstallFFmpeg className="border-t border-white/[0.05] pt-4" />}
+        {!preview && <p className="text-xs text-slate-400">{t("Preview to choose episodes and season voiceovers.")}</p>}
       </div>
 
+      {preview && !!selectedKeys?.size && (
+        <div className="card space-y-3 p-5">
+          <h2 className="font-semibold text-slate-200">{t("Voiceover")}</h2>
+          <SeasonAudioPicker groups={seasonGroups} selected={seasonAudioSel} episodes={selectedKeys || new Set()} onToggle={toggleSeasonAudio} isSerial={preview.isSerial !== false} />
+        </div>
+      )}
       {preview && (
         <div className="card p-5">
           <SeriesBrowser
