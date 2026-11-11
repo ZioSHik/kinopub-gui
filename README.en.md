@@ -174,12 +174,15 @@ An **Advanced options** panel covers the fine print: container (MKV / MP4), prox
 
 ### 4. Audio tracks
 
-You pick dubs/voiceovers right where you start the download:
+Choose audio tracks before starting a download:
 
-- **From a title's page** in the catalog — under **Voiceover**, tick the tracks you want to keep (with *Select all* / *Deselect all*). Your choice is remembered and pre-applied on the next titles; if your last voiceover isn't available here, the app prompts you to pick another.
-- **When downloading from a direct link** (the Download page), the picker pops up as a timed modal the moment the download starts: tick the tracks, *Only this* to keep one, or *Keep all* to take everything (also what the timer does on expiry).
+- **For a series**, each selected season has its own compact voiceover picker. Studio, language, codec and channel choices are remembered separately for each season.
+- **For a movie**, choose tracks from the compact list; preferences are saved for that movie. Different codecs and channel counts remain separate options.
+- **For a direct link**, click **Preview** to load episodes and the same season pickers. Refresh the preview after changing the link, output folder or proxy.
 
-Your choice is generalized across episodes and matched by language: if a chosen dub is missing from some episode, the engine falls back to another track in the same language. By default every track is kept.
+Choices apply to the selected episodes of their season. If a track is unavailable for some selected episodes, the app asks you to change the voiceover or deselect those episodes. An explicitly selected track is never silently replaced. Each selected season gets its own queue entry.
+
+Deselecting every episode of a season hides its audio picker. Choosing the same tracks in two seasons prompts you to apply them to other compatible seasons; existing choices are preserved.
 
 ### 5. Library
 
@@ -189,9 +192,15 @@ The **Library** scans your output folders and shows everything you've downloaded
 
 Defaults for new downloads (output folder, quality, container, proxy) plus extra folders to scan in the Library, the kino.watch sign-in, the ffmpeg installer and the software updater. Stored at `~/.config/kinopub/gui.json`.
 
-There is no speed to tune — the app works it out itself. The structure is fixed: one title at a time (the rest wait in a queue you can reorder) and two episodes in parallel inside it. More doesn't go faster — the link is already busy — it just splits it and multiplies connections to the CDN.
+One episode downloads at a time while ffmpeg may assemble the previous episode in parallel. Fragment concurrency starts at four and adjusts to measured throughput. After thirty seconds at a stable level, the controller probes an extra request and rolls it back if it brings no meaningful improvement. Selecting more audio tracks does not automatically increase connection limits.
 
-How many segments are fetched at once, though, is tuned to your link at runtime: the downloader measures real throughput in 4-second windows and raises concurrency while it keeps improving; on a plateau it settles, and on a drop it steps back. Every half minute it probes again, because links change under you (Wi-Fi to Ethernet, a video call ending). The ceiling is 16, the floor is one slot per track so audio always downloads alongside video. If the CDN answers 429 or 503, concurrency is halved immediately and the pause comes from the `Retry-After` header — exactly what the server asked for, not a number we invented. On top of that, network failures are retried with growing backoff (1→2→4→8→16s).
+Playback and downloads share the request budget. New background requests wait during playback and resume when the player pauses or closes. Manual retries take queue priority while respecting the shared limit.
+
+Responses `429` and `503` reduce concurrency and trigger a shared cooldown honoring the full `Retry-After`. An explicit `HTTP 403: user session limit reached` triggers a shared pause of at least one minute, or longer when requested by the CDN. Downloads then resume with two requests and can speed up again as successful measurements justify it.
+
+Complete fragments survive download errors, exhausted automatic retries, and failed or paused ffmpeg assembly. Retry and application restart reuse them; successful assembly or explicit cancellation removes them. Refreshing the signed CDN session prefix preserves fragments for the same media and rendition; changing quality, audio rendition or media invalidates the corresponding cache.
+
+The folder picker accepts a manually entered path. Empty folders open correctly, and an invalid path shows an error without changing the selected folder.
 
 ---
 
