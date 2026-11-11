@@ -88,7 +88,10 @@ func (d *Downloader) downloadSubtitleRendition(ctx context.Context, sub Subtitle
 	fail := func(err error) (domain.HLSSubtitleTrack, error) {
 		return domain.HLSSubtitleTrack{}, fmt.Errorf("subtitle %q: %w", sub.Name, err)
 	}
-	playlist, err := FetchMediaPlaylist(ctx, d.subtitleClient, sub.URI, d.auth)
+	if err := d.sharedLimiter().waitSession(ctx); err != nil {
+		return fail(err)
+	}
+	playlist, err := fetchMediaPlaylist(ctx, d.subtitleClient, sub.URI, d.auth, d.sharedLimiter())
 	if err != nil {
 		return fail(err)
 	}

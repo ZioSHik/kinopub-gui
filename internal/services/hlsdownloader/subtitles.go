@@ -28,6 +28,11 @@ func (d *Downloader) DownloadSubtitles(ctx context.Context, sources []domain.Sub
 	if len(sources) == 0 {
 		return nil, nil
 	}
+	release, err := d.sharedLimiter().beginEpisode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if dir == "" {
 		return nil, fmt.Errorf("subtitle temporary directory is required")
 	}
@@ -74,13 +79,16 @@ func (d *Downloader) downloadSubtitle(ctx context.Context, rawURL, path string) 
 		if err == nil {
 			return nil
 		}
+		if errors.Is(err, domain.ErrCDNSessionLimit) {
+			return err
+		}
 		if ctx.Err() != nil || !isTransientSubtitleError(err) || attempt >= 2 {
 			return err
 		}
 		delay := time.Second << attempt
 		var status *statusError
 		if errors.As(err, &status) && status.RetryAfter > delay {
-			delay = min(status.RetryAfter, maxThrottleCoolDown)
+			delay = status.RetryAfter
 		}
 		select {
 		case <-ctx.Done():
@@ -94,11 +102,20 @@ func (d *Downloader) downloadSubtitle(ctx context.Context, rawURL, path string) 
 func isTransientSubtitleError(err error) bool {
 	var status *statusError
 	var network net.Error
-	return (errors.As(err, &status) && (status.throttled() || status.Code >= 500)) ||
+	return errors.Is(err, domain.ErrCDNSessionLimit) ||
+		(errors.As(err, &status) && (status.throttled() || status.Code >= 500)) ||
 		errors.As(err, &network) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
 
 func (d *Downloader) downloadSubtitleOnce(ctx context.Context, rawURL, path string) error {
+	lim := d.sharedLimiter()
+	if err := lim.acquire(ctx); err != nil {
+		return err
+	}
+	defer lim.release()
+	if err := lim.waitSession(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -112,7 +129,9 @@ func (d *Downloader) downloadSubtitleOnce(ctx context.Context, rawURL, path stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return cdnStatusError(resp)
+		err := cdnStatusError(resp)
+		lim.observeError(err)
+		return err
 	}
 	f, err := os.CreateTemp(filepath.Dir(path), ".subtitle-*")
 	if err != nil {

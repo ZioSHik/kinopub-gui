@@ -2,7 +2,6 @@ package gui
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/ZioSHik/kinopub-gui/internal/domain"
 	"github.com/ZioSHik/kinopub-gui/internal/services/kinopubapi"
@@ -13,10 +12,10 @@ import (
 func collectSeasonAudios(number int, episodes []kinopubapi.Episode) []DiscoverAudio {
 	audios := collectAudios(kinopubapi.Item{Seasons: []kinopubapi.Season{{Episodes: episodes}}})
 	for i := range audios {
+		identity := catalogAudioIdentity(audios[i].Lang, audios[i].Type, audios[i].Author, audios[i].Codec, audios[i].Channels)
 		for _, ep := range episodes {
 			for _, a := range ep.Audios {
-				if strings.EqualFold(a.Lang, audios[i].Lang) && strings.EqualFold(a.Type.Title, audios[i].Type) &&
-					strings.EqualFold(a.Author.Title, audios[i].Author) && strings.EqualFold(a.Codec, audios[i].Codec) && a.Channels == audios[i].Channels {
+				if catalogAudioIdentity(a.Lang, a.Type.Title, a.Author.Title, a.Codec, a.Channels) == identity {
 					audios[i].EpisodeKeys = append(audios[i].EpisodeKeys, fmt.Sprintf("S%dE%d", number, ep.Number))
 					break
 				}

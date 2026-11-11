@@ -106,7 +106,7 @@ it.each([false, true])("allows adding another voiceover or quality while the sam
   expect(screen.getByRole("button", {name: "In the queue — open"})).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", {name: "Studio A"}));
   fireEvent.click(screen.getByRole("button", {name: "Studio B"}));
-  const button = () => screen.getByRole("button", {name: serial ? "Download (8)" : "Download"});
+  const button = () => screen.getByRole("button", {name: serial ? "Download (8)" : "Download movie"});
   expect(button()).toBeEnabled();
   await act(async () => {fireEvent.click(button());});
   expect(mocks.start.mock.calls[0][0].audioSpecs[0].require).toContain("Studio B");
@@ -189,4 +189,35 @@ it("blocks a seasonal track missing from a selected episode instead of substitut
   expect(within(sixth).getByText(/This voiceover is missing/)).toBeInTheDocument();
   expect(screen.getByRole("button", {name: "Choose a voiceover"})).toBeDisabled();
   expect(mocks.start).not.toHaveBeenCalled();
+});
+
+it.each(["season", "episode", "all"])("hides voiceovers after deselecting %s and restores the choice on reselection", async (mode) => {
+  await useSeasonCatalog();
+  render(<I18nProvider><TitleDetail id="8867" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  fireEvent.click(within(screen.getByLabelText("Season 1 voiceovers")).getByRole("button", {name: "Дубляж"}));
+  if (mode === "season") fireEvent.click(screen.getAllByTitle("Toggle season")[0]);
+  else if (mode === "episode") fireEvent.click(screen.getByRole("button", {name: /^1 Pilot/}));
+  else fireEvent.click(screen.getByRole("button", {name: "Deselect all"}));
+  expect(screen.queryByLabelText("Season 1 voiceovers")).not.toBeInTheDocument();
+  if (mode === "all") expect(screen.queryByRole("heading", {name: "Voiceover"})).not.toBeInTheDocument();
+  fireEvent.click(screen.getAllByTitle("Toggle season")[0]);
+  expect(within(screen.getByLabelText("Season 1 voiceovers")).getByRole("button", {name: "Дубляж"})).toHaveAttribute("aria-pressed", "true");
+});
+
+it("submits only the explicitly chosen movie rendition and never creates season controls", async () => {
+  const detail = await mocks.detail();
+  const aac = { index: 1, lang: "rus", type: "Дубляж", author: "", label: "Дубляж", filter: "Дубляж", codec: "aac", channels: 2, surround: false };
+  const surround = { ...aac, index: 2, label: "Дубляж · AC3 5.1", codec: "ac3", channels: 6, surround: true };
+  detail.seasons = []; detail.isSerial = false; detail.audios = [aac, surround];
+  mocks.detail.mockResolvedValue(detail); mocks.downloaded.mockResolvedValue({episodes: []});
+  render(<I18nProvider><TitleDetail id="77890" onClose={vi.fn()} onPick={vi.fn()} /></I18nProvider>);
+  await act(async () => {});
+  expect(screen.queryByLabelText(/Season .* voiceovers/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", {name: "Choose a voiceover"})).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", {name: surround.label}));
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name: "Download movie"})); });
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.start.mock.calls[0][0].audioSpecs).toEqual(audioSelectionSpecs([surround]));
+  expect(mocks.start.mock.calls[0][0].episodeKeys).toBeUndefined();
 });

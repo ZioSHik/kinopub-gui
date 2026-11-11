@@ -149,7 +149,7 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
       setSelectedKeys(new Set(selectableKeysOf(r)));
       setSeasonAudioSel(seedSeasonAudio(r.seriesId, r.seasons.map((season) => ({
         number: season.number, audios: season.audios || [], episodeKeys: season.episodes.map((episode) => episode.key),
-      }))));
+      })), [], r.isSerial !== false));
       toast(t('Resolved “{title}” · {n} episodes', { title: r.title, n: r.total }), "success");
     } catch (e: any) {
       if (generation !== previewGeneration.current) return;
@@ -198,7 +198,7 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
         if (!keys.length) continue;
         await api.startJob({ ...request, seasons: String(group.number), episodeKeys: keys, audio: "", audioMenu: false,
           audioSpecs: audioSelectionSpecs(chosenSeasonAudios(group, seasonAudioSel)) });
-        rememberSeasonAudio(preview.seriesId, group, seasonAudioSel);
+        rememberSeasonAudio(preview.seriesId, group, seasonAudioSel, preview.isSerial !== false);
         setSelectedKeys((cur) => cur ? new Set([...cur].filter((key) => !keys.includes(key))) : cur);
       }
       toast(t("Added to the queue"), "success");
@@ -329,7 +329,7 @@ export function DownloadPage({ onSignIn }: { onSignIn: () => void }) {
         {!preview && <p className="text-xs text-slate-400">{t("Preview to choose episodes and season voiceovers.")}</p>}
       </div>
 
-      {preview && (
+      {preview && !!selectedKeys?.size && (
         <div className="card space-y-3 p-5">
           <h2 className="font-semibold text-slate-200">{t("Voiceover")}</h2>
           <SeasonAudioPicker groups={seasonGroups} selected={seasonAudioSel} episodes={selectedKeys || new Set()} onToggle={toggleSeasonAudio} isSerial={preview.isSerial !== false} />

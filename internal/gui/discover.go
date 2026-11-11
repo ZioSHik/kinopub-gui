@@ -265,7 +265,9 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 		}
 	}
 
-	seen := map[string]bool{}
+	seen := map[catalogAudioKey]bool{}
+	seenUnnamed := map[string]bool{}
+	labelCounts := map[string]int{}
 	labelLanguages := map[string]map[string]bool{}
 	for _, audio := range src {
 		label, _ := audioLabel(audio)
@@ -280,10 +282,18 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 		if len(labelLanguages[label]) > 1 {
 			label += " · " + strings.ToUpper(a.Lang)
 		}
-		if seen[label] {
+		identity := catalogAudioIdentity(a.Lang, a.Type.Title, a.Author.Title, a.Codec, a.Channels)
+		duplicate := seen[identity]
+		if identity.language == "" && identity.kind == "" && identity.author == "" {
+			// With no source metadata, keep the numbered fallback entries distinct.
+			duplicate = seenUnnamed[label]
+			seenUnnamed[label] = true
+		}
+		if duplicate {
 			continue
 		}
-		seen[label] = true
+		seen[identity] = true
+		labelCounts[label]++
 		out = append(out, DiscoverAudio{
 			Index:    a.Index,
 			Lang:     a.Lang,
@@ -296,7 +306,28 @@ func collectAudios(it kinopubapi.Item) []DiscoverAudio {
 			Surround: audioIsSurround(a),
 		})
 	}
+	// Labels are presentation, not identity: mono/stereo and stereo codecs can
+	// share a name. Give colliding renditions separate picker labels as well.
+	for i := range out {
+		if labelCounts[out[i].Label] > 1 {
+			codec := strings.ToUpper(strings.TrimSpace(out[i].Codec))
+			if codec == "" {
+				codec = "Audio"
+			}
+			out[i].Label += fmt.Sprintf(" · %s %dch", codec, out[i].Channels)
+		}
+	}
 	return out
+}
+
+type catalogAudioKey struct {
+	language, kind, author, codec string
+	channels                      int
+}
+
+func catalogAudioIdentity(language, kind, author, codec string, channels int) catalogAudioKey {
+	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	return catalogAudioKey{norm(language), norm(kind), norm(author), strings.ReplaceAll(norm(codec), "-", ""), channels}
 }
 
 func collectSeasons(it kinopubapi.Item) ([]DiscoverSeason, int) {

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { DownloadPage } from "./Download";
+import { audioIdentity, readAudioPref, writeAudioPref } from "../lib/audio";
 
 const mocks = vi.hoisted(() => ({ start: vi.fn(), preview: vi.fn() }));
 vi.mock("../api", async (original) => ({ ...(await original<typeof import("../api")>()), api: { startJob: mocks.start, preview: mocks.preview } }));
@@ -86,4 +87,36 @@ it("refreshes the preview when force re-download changes and sends that choice",
   fireEvent.click(within(screen.getByLabelText("Season 6 voiceovers")).getByRole("button", { name: rentv.label, hidden: true }));
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Start download (2)" })); });
   expect(mocks.start.mock.calls[0][0]).toMatchObject({ force: true, seasons: "1" });
+});
+
+it("hides a deselected season's voiceovers and queues only selected seasons", async () => {
+  open();
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name: "Preview"})); });
+  fireEvent.click(within(screen.getByLabelText("Season 1 voiceovers")).getByRole("button", {name: dub.label}));
+  fireEvent.click(screen.getAllByTitle("Toggle season")[1]);
+  expect(screen.queryByLabelText("Season 6 voiceovers")).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name: "Start download (1)"})); });
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.start.mock.calls[0][0]).toMatchObject({seasons: "1", episodeKeys: ["S1E1"]});
+  expect(screen.queryByRole("heading", {name: "Voiceover"})).not.toBeInTheDocument();
+});
+
+it("selects exact audio for a movie preview without showing a season picker", async () => {
+  const movie = catalog(); movie.isSerial = false; movie.seasons = [movie.seasons[0]];
+  const original = {...dub, index: 2, lang: "eng", type: "Оригинал", label: "Оригинал", filter: "Оригинал"};
+  movie.seasons[0].audios = [dub, original];
+  writeAudioPref(movie.seriesId, [audioIdentity(dub)]);
+  mocks.preview.mockResolvedValue(movie);
+  open();
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name: "Preview"})); });
+  expect(screen.queryByLabelText("Season 1 voiceovers")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", {name: dub.label})).toHaveAttribute("aria-pressed", "true");
+  fireEvent.click(screen.getByRole("button", {name: dub.label}));
+  expect(screen.getByRole("button", {name: "Start download (1)"})).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", {name: "Оригинал"}));
+  await act(async () => { fireEvent.click(screen.getByRole("button", {name: "Start download (1)"})); });
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.start.mock.calls[0][0].audioSpecs).toHaveLength(1);
+  expect(mocks.start.mock.calls[0][0].audioSpecs[0].source).toMatchObject({language: "eng", type: "Оригинал", codec: "aac", channels: 2});
+  expect(readAudioPref(movie.seriesId)).toEqual({scoped: true, prefs: [audioIdentity(original)]});
 });

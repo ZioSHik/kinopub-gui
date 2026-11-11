@@ -58,6 +58,15 @@ type MediaPlaylist struct {
 
 // FetchMasterPlaylist downloads and parses an HLS master playlist.
 func FetchMasterPlaylist(ctx context.Context, client *http.Client, manifestURL string, auth domain.RequestAuth, logger domain.Logger) (*MasterPlaylist, error) {
+	return fetchMasterPlaylist(ctx, client, manifestURL, auth, nil)
+}
+
+func fetchMasterPlaylist(ctx context.Context, client *http.Client, manifestURL string, auth domain.RequestAuth, lim *Limiter) (*MasterPlaylist, error) {
+	release, err := acquireManifest(ctx, lim)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -74,7 +83,11 @@ func FetchMasterPlaylist(ctx context.Context, client *http.Client, manifestURL s
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("master playlist returned %w", cdnStatusError(resp))
+		status := cdnStatusError(resp)
+		if lim != nil {
+			lim.observeError(status)
+		}
+		return nil, fmt.Errorf("master playlist returned %w", status)
 	}
 
 	return parseMasterPlaylist(resp.Body, manifestURL)
@@ -83,11 +96,30 @@ func FetchMasterPlaylist(ctx context.Context, client *http.Client, manifestURL s
 // FetchMediaPlaylist downloads and parses an HLS media playlist (segment list).
 // Retries up to 3 times with increasing timeout since CDN can be slow.
 func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL string, auth domain.RequestAuth) (*MediaPlaylist, error) {
+	return fetchMediaPlaylist(ctx, client, playlistURL, auth, nil)
+}
+
+func acquireManifest(ctx context.Context, lim *Limiter) (func(), error) {
+	if lim == nil {
+		return func() {}, nil
+	}
+	if err := lim.acquire(ctx); err != nil {
+		return nil, err
+	}
+	return lim.release, nil
+}
+
+func fetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL string, auth domain.RequestAuth, lim *Limiter) (*MediaPlaylist, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < 3; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+
+		release, err := acquireManifest(ctx, lim)
+		if err != nil {
+			return nil, err
 		}
 
 		// Increasing timeout: 30s, 45s, 60s.
@@ -97,6 +129,7 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, playlistURL, nil)
 		if err != nil {
 			cancel()
+			release()
 			return nil, err
 		}
 		applyHLSAuth(req, auth)
@@ -104,6 +137,7 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
+			release()
 			lastErr = err
 			// Brief pause before retry.
 			select {
@@ -116,8 +150,12 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 
 		if resp.StatusCode != http.StatusOK {
 			status := cdnStatusError(resp)
+			if lim != nil {
+				lim.observeError(status)
+			}
 			resp.Body.Close()
 			cancel()
+			release()
 			lastErr = fmt.Errorf("media playlist returned %w", status)
 			if status.SessionLimit {
 				return nil, lastErr
@@ -133,6 +171,7 @@ func FetchMediaPlaylist(ctx context.Context, client *http.Client, playlistURL st
 		result, err := parseMediaPlaylist(resp.Body, playlistURL)
 		resp.Body.Close()
 		cancel()
+		release()
 		if err != nil {
 			return nil, err
 		}

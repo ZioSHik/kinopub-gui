@@ -658,6 +658,7 @@ export const api = {
   kpLogout: () => req<KPStatus>("POST", "/api/kp/logout"),
 
   // Discovery.
+  playbackLease: (id: string, active: boolean) => req<{ok: boolean}>("POST", "/api/player/lease", {id, active}, {timeoutMs: 5000}),
   stream: (id: string, season?: number, episode?: number) => {
     const p = new URLSearchParams({ id });
     if (season != null) p.set("season", String(season));

@@ -535,7 +535,7 @@ export function TitleDetail({
 
                 <div className="min-w-0 flex-1 space-y-2.5 pr-8">
                   <div>
-                    <h2 className="text-xl font-bold leading-tight text-white sm:text-2xl">{detail.title}</h2>
+                    <h2 className="break-words text-xl font-bold leading-tight text-white sm:text-2xl">{detail.title}</h2>
                     {detail.originalTitle && (
                       <p className="mt-1 truncate text-sm text-slate-400" title={detail.originalTitle}>
                         {detail.originalTitle}
@@ -618,6 +618,7 @@ export function TitleDetail({
               )}
 
               {/* Озвучки */}
+              {(!usesSeasonAudio || !!epSel?.size) && (
               <Section
                 icon={<Mic2 className="h-4 w-4" />}
                 title={t("Voiceover")}
@@ -648,9 +649,12 @@ export function TitleDetail({
                     {t("Voiceover list appears after sign-in / for available titles.")}
                   </p>
                 ) : (
-                  <AudioPicker audios={detail.audios} selected={audioSel} onToggle={toggleAudio} />
+                  <div className={!isSerial ? "rounded-xl border border-white/[0.08] bg-ink-900/30 p-2" : undefined}>
+                    <AudioPicker compact={!isSerial} audios={detail.audios} selected={audioSel} onToggle={toggleAudio} />
+                  </div>
                 )}
               </Section>
+              )}
 
               {/* Episodes (serials) */}
               {isSerial && epSel && (
@@ -941,7 +945,7 @@ export function TitleDetail({
                     }
                   >
                     {starting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                    {isSerial ? t("Download ({n})", { n: selectedCount }) : t("Download")}
+                    {isSerial ? t("Download ({n})", { n: selectedCount }) : t("Download movie")}
                   </button>
                 )}
                 {/* Part of the title is already downloading and part isn't: the

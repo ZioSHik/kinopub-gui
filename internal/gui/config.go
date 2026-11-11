@@ -19,38 +19,18 @@ import (
 // UA that solved the challenge, so we default to a realistic Safari UA.
 const defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15"
 
-// Download tuning. These were user-facing knobs ("Concurrency", "Retries",
-// "Max simultaneous downloads") until it became clear there is one right answer
-// and the wrong ones only hurt, so they are fixed here.
-//
-// episodeConcurrency: this is NOT a bandwidth knob — the segment budget that
-// fills the link is set by a throughput controller shared across every download
-// in the process (hlsdownloader.Limiter), which measures the link and ramps itself,
-// so raising this number does not buy more speed. Keep one episode active to
-// avoid consuming multiple playback sessions on accounts with a CDN session cap.
-//
-// episodeRetries: retry transient network/CDN failures, including an explicit
-// session-limit response. Session exhaustion gets at least a minute of shared
-// back-pressure; an unrelated 403 remains a terminal authorization error.
-//
-// maxActiveDownloads: the resting limit. Bandwidth is one fixed pie, so running
-// several titles at once normally only divides it — nothing finishes sooner in
-// total while every single title finishes later. One at a time gives the fastest
-// first watchable file; the wait queue is reorderable, and per-episode retries
-// are flagged urgent so they bypass this limit and still start immediately.
-//
-// maxAdaptiveDownloads stays at one as well: lending a second job a network slot
-// still opens another playback session, even if the bandwidth is available.
-//
-// admissionPoll / admissionWindowSamples / admissionIdleShare: how that is
-// measured — a sample every 2s over a ~30s window, and the pipe has to have been
-// idle for most of it. The window is what keeps the seconds every job spends
-// resolving from quietly making two-at-a-time the norm.
+// Network and CPU work have separate budgets. Two episode workers allow the
+// next download to overlap ffmpeg muxing; the shared CDN limiter admits only
+// one downloading episode and tunes its fragment concurrency from throughput.
+// A second job may use an otherwise idle pipe under the same admission gate.
+// Manual retries go to the front of the queue without bypassing its job limit.
+// Session exhaustion pauses all CDN requests for at least a minute (or longer
+// Retry-After), then restarts conservatively and measures its way back up.
 const (
-	episodeConcurrency   = 1
+	episodeConcurrency   = 2
 	episodeRetries       = 5
 	maxActiveDownloads   = 1
-	maxAdaptiveDownloads = 1
+	maxAdaptiveDownloads = 2
 
 	admissionPoll          = 2 * time.Second
 	admissionWindowSamples = 15

@@ -171,7 +171,12 @@ func (d *Downloader) audioPreference() domain.AudioPreference {
 // ListAudioTracks fetches the master playlist and reports the audio renditions
 // available for the selected quality variant, without downloading segments.
 func (d *Downloader) ListAudioTracks(ctx context.Context, manifestURL string, quality domain.Quality) ([]domain.AudioTrackInfo, error) {
-	master, err := FetchMasterPlaylist(ctx, d.client, manifestURL, d.auth, d.logger)
+	release, err := d.sharedLimiter().beginEpisode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	master, err := fetchMasterPlaylist(ctx, d.client, manifestURL, d.auth, d.sharedLimiter())
 	if err != nil {
 		return nil, fmt.Errorf("master playlist: %w", err)
 	}
@@ -239,17 +244,18 @@ func (d *Downloader) downloadEpisodeInternal(
 
 func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, quality domain.Quality,
 	outPath string, key domain.EpisodeKey, sink domain.ProgressSink, audioOnly bool, existing []string) (*domain.HLSDownloadResult, error) {
-	if err := d.sharedLimiter().waitSession(ctx); err != nil {
+	releaseEpisode, err := d.sharedLimiter().beginEpisode(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer releaseEpisode()
 	epLabel := fmt.Sprintf("S%02dE%02d", key.Season, key.Episode)
 
 	// 1. Fetch and parse master playlist.
 	d.logger.Info("fetching HLS master playlist", domain.F("episode", epLabel))
 
-	master, err := FetchMasterPlaylist(ctx, d.client, manifestURL, d.auth, d.logger)
+	master, err := fetchMasterPlaylist(ctx, d.client, manifestURL, d.auth, d.sharedLimiter())
 	if err != nil {
-		d.observeSessionLimit(err)
 		return nil, fmt.Errorf("master playlist: %w", err)
 	}
 	if len(master.Variants) == 0 {
@@ -342,9 +348,8 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 	}
 
 	// 4. Fetch video media playlist.
-	videoPlaylist, err := FetchMediaPlaylist(ctx, d.client, selected.URL, d.auth)
+	videoPlaylist, err := fetchMediaPlaylist(ctx, d.client, selected.URL, d.auth, d.sharedLimiter())
 	if err != nil {
-		d.observeSessionLimit(err)
 		return nil, fmt.Errorf("media playlist: %w", err)
 	}
 	if len(videoPlaylist.Segments) == 0 {
@@ -372,9 +377,8 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		if audioOnly && present {
 			continue
 		}
-		ap, err := FetchMediaPlaylist(ctx, d.client, a.URI, d.auth)
+		ap, err := fetchMediaPlaylist(ctx, d.client, a.URI, d.auth, d.sharedLimiter())
 		if err != nil {
-			d.observeSessionLimit(err)
 			kind := "audio"
 			if pref.RequiresOriginal() {
 				kind = "requested original audio"
@@ -510,13 +514,15 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 	// link, not on us, and one link deserves exactly one controller.
 	lim := d.sharedLimiter()
 	concurrencyStart := lim.current()
-	// Guarantee every track (video + each audio) can have at least one segment
-	// in flight simultaneously, so audio always downloads together with video.
-	// This raises the floor the controller may never back off past for as long as
-	// this episode is downloading, and drops it again when the episode ends.
+	// Register active tracks. The GUI caps their combined floor at two; the
+	// measured throughput, not voiceover count, decides whether to add sockets.
 	nTracks := 1 + len(audioJobs)
 	lim.addTracks(nTracks)
 	defer lim.removeTracks(nTracks)
+
+	// Bound workers across all tracks separately from HTTP slots. Each retry
+	// returns its HTTP slot before waiting, leaving it available to playback.
+	workers := make(chan struct{}, hardSegmentConcurrency)
 
 	// downloadTrack fetches every segment of a single track into segDir (with
 	// resume + bounded concurrency), then concatenates them into outPath.
@@ -542,6 +548,7 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 			errMu.Unlock()
 		}
 
+	launch:
 		for _, seg := range segments {
 			if gctx.Err() != nil {
 				break
@@ -557,27 +564,23 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 				continue
 			}
 
-			// Acquire a concurrency slot. This also absorbs any CDN cool-down, so
-			// back-pressure is applied before we open the connection rather than
-			// after the server has already rejected it.
-			if err := lim.acquire(gctx); err != nil {
-				break
+			select {
+			case workers <- struct{}{}:
+			case <-gctx.Done():
+				break launch
 			}
 
 			wg.Add(1)
 			go func(seg Segment, segPath string) {
 				defer wg.Done()
+				defer func() { <-workers }()
 
 				n, err := d.downloadSegment(gctx, seg, segPath, lim)
 				if err != nil {
-					// Release without measuring: a failed attempt's bytes say
-					// nothing about whether the current concurrency is right.
-					lim.release()
 					os.Remove(segPath)
 					setErr(fmt.Errorf("segment %d failed: %w", seg.Index, err))
 					return
 				}
-				lim.done(n)
 				updateTrack(trackIdx, n)
 			}(seg, segPath)
 		}
@@ -597,7 +600,8 @@ func (d *Downloader) downloadSelected(ctx context.Context, manifestURL string, q
 		if initURI != "" {
 			initPath = filepath.Join(segDir, "init.mp4")
 			if info, statErr := os.Stat(initPath); statErr != nil || info.Size() == 0 {
-				if _, err := d.downloadSegment(ctx, Segment{URL: initURI, Index: -1}, initPath, lim); err != nil {
+				_, err := d.downloadSegment(ctx, Segment{URL: initURI, Index: -1}, initPath, lim)
+				if err != nil {
 					return fmt.Errorf("init segment: %w", err)
 				}
 			}
@@ -771,15 +775,35 @@ func cdnStatusError(resp *http.Response) *statusError {
 	err := &statusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	if resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		// The player still forwards an error body; classification must not eat it.
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(strings.NewReader(string(body)), resp.Body), resp.Body}
 		err.SessionLimit = strings.Contains(strings.ToLower(string(body)), "user session limit reached")
 	}
 	return err
 }
 
-func (d *Downloader) observeSessionLimit(err error) {
+// ObserveResponse shares CDN back-pressure with the in-app playback proxy.
+// It preserves resp.Body and never exposes unrecognized upstream body text.
+func (l *adaptiveLimiter) ObserveResponse(resp *http.Response) error {
+	if resp.StatusCode < 400 {
+		return nil
+	}
+	err := cdnStatusError(resp)
+	l.observeError(err)
+	return err
+}
+
+func (l *adaptiveLimiter) observeError(err error) {
 	var status *statusError
-	if errors.As(err, &status) && status.SessionLimit {
-		d.sharedLimiter().sessionLimited(status.RetryAfter)
+	if errors.As(err, &status) {
+		if status.SessionLimit {
+			l.sessionLimited(status.RetryAfter)
+		} else if status.throttled() {
+			l.throttle(status.RetryAfter)
+		}
 	}
 }
 
@@ -790,11 +814,12 @@ func (e *statusError) throttled() bool {
 	return e.Code == http.StatusTooManyRequests || e.Code == http.StatusServiceUnavailable
 }
 
-// downloadSegment downloads a single segment with retries. lim may be nil (the
-// init segment is fetched outside the worker pool); when set, throttling
-// responses are reported to it so every worker backs off together instead of
-// each one discovering the limit on its own.
+// downloadSegment admits each HTTP attempt separately. Backoff holds no slot;
+// all fragment types share the same cooldown and playback priority.
 func (d *Downloader) downloadSegment(ctx context.Context, seg Segment, outPath string, lim *adaptiveLimiter) (int64, error) {
+	if lim == nil {
+		lim = d.sharedLimiter()
+	}
 	var lastErr error
 
 	for attempt := 0; attempt < maxSegmentRetries; attempt++ {
@@ -811,9 +836,6 @@ func (d *Downloader) downloadSegment(ctx context.Context, seg Segment, outPath s
 			var se *statusError
 			if errors.As(lastErr, &se) && se.RetryAfter > delay {
 				delay = se.RetryAfter
-				if delay > maxThrottleCoolDown {
-					delay = maxThrottleCoolDown
-				}
 			}
 			select {
 			case <-ctx.Done():
@@ -822,19 +844,20 @@ func (d *Downloader) downloadSegment(ctx context.Context, seg Segment, outPath s
 			}
 		}
 
+		if err := lim.acquire(ctx); err != nil {
+			return 0, err
+		}
 		n, err := d.fetchSegment(ctx, seg.URL, outPath)
 		if err == nil {
+			lim.done(n)
 			return n, nil
 		}
+		lim.observeError(err)
+		lim.release()
 
 		lastErr = err
 		if errors.Is(err, domain.ErrCDNSessionLimit) {
-			d.observeSessionLimit(err)
 			return 0, err
-		}
-		var se *statusError
-		if lim != nil && errors.As(err, &se) && se.throttled() {
-			lim.throttle(se.RetryAfter)
 		}
 		d.logger.Debug("segment retry",
 			domain.F("segment", seg.Index),

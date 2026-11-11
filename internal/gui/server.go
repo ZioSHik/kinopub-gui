@@ -217,6 +217,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/discover/stream", s.handleDiscoverStream)
 	mux.HandleFunc("POST /api/discover/marktime", s.handleDiscoverMarkTime)
 	mux.HandleFunc("GET /api/hls", s.handleHLSProxy)
+	mux.HandleFunc("POST /api/player/lease", s.handlePlaybackLease)
 
 	mux.HandleFunc("GET /api/ffmpeg", s.handleFFmpeg)
 
