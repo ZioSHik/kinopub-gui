@@ -115,6 +115,6 @@ app dmg: web ## Build KinoPub.app and a .dmg (macOS; ARCH=x86_64 for Intel)
 # Embed the Windows icon by generating a .syso resource (needs goversioninfo and
 # build/icons/icon.ico). Run before `make release-gui` for an icon'd .exe.
 winsyso: ## Generate the Windows icon resource (.syso) for release-gui
-	go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest \
+	go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0 \
 		-skip-versioninfo -icon build/icons/icon.ico -64 \
 		-o cmd/kinopub-gui/resource_windows_amd64.syso
